@@ -2004,23 +2004,18 @@ def gdrive_menu(call):
 
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
-# ==================== SYNC GDRIVE CONFIG TO TUMBAL ====================
+# ==================== SYNC GDRIVE CONFIG - PILIH VPS ====================
 @bot.callback_query_handler(func=lambda call: call.data == "gdrive_sync_config")
-def gdrive_sync_config(call):
-    """Copy rclone.conf dari bot server ke VPS tumbal aktif"""
+def gdrive_sync_config_menu(call):
+    """Tampilkan daftar VPS tumbal untuk dipilih"""
     if not is_owner(call.from_user.id):
         bot.answer_callback_query(call.id, "⛔ Hanya untuk owner!")
-        return
-
-    tumbal = get_active_tumbal()
-    if not tumbal:
-        bot.answer_callback_query(call.id, "❌ Belum ada VPS tumbal aktif!")
         return
 
     # Cek apakah rclone.conf ada di bot server
     rclone_conf = os.path.expanduser("~/.config/rclone/rclone.conf")
     if not os.path.exists(rclone_conf):
-        bot.answer_callback_query(call.id, "❌ rclone.conf tidak ada di bot server!")
+        bot.answer_callback_query(call.id, "❌ rclone.conf tidak ada!")
         bot.send_message(call.message.chat.id, """❌ <b>Rclone belum dikonfigurasi di bot server!</b>
 
 Jalankan dulu di bot server:
@@ -2029,33 +2024,95 @@ Jalankan dulu di bot server:
 Setelah itu baru bisa sync ke VPS tumbal.""", parse_mode="HTML")
         return
 
-    bot.answer_callback_query(call.id, "⏳ Syncing config...")
+    tumbal_list = data.get("tumbal_list", [])
+    if not tumbal_list:
+        bot.answer_callback_query(call.id, "❌ Belum ada VPS tumbal!")
+        return
+
+    bot.answer_callback_query(call.id, "Pilih VPS tujuan...")
+
+    text = """🔄 <b>SYNC GDRIVE CONFIG</b>
+━━━━━━━━━━━━━━━━━━
+
+📤 <b>Dari:</b> Bot Server
+📥 <b>Ke:</b> Pilih VPS di bawah
+
+<b>Pilih VPS tujuan:</b>"""
+
+    markup = types.InlineKeyboardMarkup()
     
-    ip = tumbal["ip"]
-    password = tumbal["password"]
-    name = tumbal["name"]
+    # Tombol untuk setiap VPS
+    for t in tumbal_list:
+        status = "✅" if t.get("enabled") else "❌"
+        markup.add(types.InlineKeyboardButton(
+            f"{status} {t['name']} ({t['ip']})", 
+            callback_data=f"sync_to:{t['id']}"
+        ))
+    
+    # Tombol sync ke SEMUA VPS
+    if len(tumbal_list) > 1:
+        markup.add(types.InlineKeyboardButton("🔄 Sync ke SEMUA VPS", callback_data="sync_to:ALL"))
+    
+    markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="gdrive_menu"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
+# ==================== SYNC TO SPECIFIC VPS ====================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("sync_to:"))
+def gdrive_sync_to_vps(call):
+    """Sync rclone.conf ke VPS yang dipilih"""
+    if not is_owner(call.from_user.id):
+        bot.answer_callback_query(call.id, "⛔ Hanya untuk owner!")
+        return
+
+    target_id = call.data.replace("sync_to:", "")
+    
+    rclone_conf = os.path.expanduser("~/.config/rclone/rclone.conf")
+    if not os.path.exists(rclone_conf):
+        bot.answer_callback_query(call.id, "❌ rclone.conf tidak ada!")
+        return
+
+    # Baca config
+    with open(rclone_conf, 'r') as f:
+        conf_content = f.read()
+
+    # Tentukan target VPS
+    if target_id == "ALL":
+        targets = [t for t in data.get("tumbal_list", []) if t.get("enabled")]
+        target_names = ", ".join([t["name"] for t in targets])
+    else:
+        tumbal = get_tumbal_by_id(target_id)
+        if not tumbal:
+            bot.answer_callback_query(call.id, "❌ VPS tidak ditemukan!")
+            return
+        targets = [tumbal]
+        target_names = tumbal["name"]
+
+    if not targets:
+        bot.answer_callback_query(call.id, "❌ Tidak ada VPS aktif!")
+        return
+
+    bot.answer_callback_query(call.id, f"⏳ Syncing ke {len(targets)} VPS...")
 
     bot.send_message(call.message.chat.id, f"""🔄 <b>SYNC GDRIVE CONFIG</b>
 ━━━━━━━━━━━━━━━━━━
 
 📤 <b>Dari:</b> Bot Server
-📥 <b>Ke:</b> {name} ({ip})
+📥 <b>Ke:</b> {target_names}
 
 ⏳ Proses sync dimulai...""", parse_mode="HTML")
 
     def do_sync():
-        try:
-            # Baca isi rclone.conf
-            with open(rclone_conf, 'r') as f:
-                conf_content = f.read()
+        results = []
+        for tumbal in targets:
+            ip = tumbal["ip"]
+            password = tumbal["password"]
+            name = tumbal["name"]
             
-            # Escape content untuk bash
-            escaped_content = conf_content.replace("'", "'\\''")
-            
-            # Copy ke VPS tumbal via SSH
-            result = subprocess.run(
-                ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
-                 f"root@{ip}", f"""
+            try:
+                result = subprocess.run(
+                    ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
+                     f"root@{ip}", f"""
 # Install rclone jika belum ada
 if ! command -v rclone &> /dev/null; then
     apt-get update -qq
@@ -2074,29 +2131,30 @@ RCLONE_EOF
 if rclone listremotes | grep -q "gdrive:"; then
     echo "SUCCESS"
 else
-    echo "ERROR:Config tersimpan tapi gdrive remote tidak ditemukan"
+    echo "ERROR:gdrive remote tidak ditemukan"
 fi
 """],
-                capture_output=True, text=True, timeout=120
-            )
+                    capture_output=True, text=True, timeout=120
+                )
 
-            output = result.stdout.strip()
-            
-            if "SUCCESS" in output:
-                bot.send_message(call.message.chat.id, f"""✅ <b>Sync Berhasil!</b>
+                output = result.stdout.strip()
+                if "SUCCESS" in output:
+                    results.append(f"✅ {name}: Berhasil")
+                elif "ERROR:" in output:
+                    error_msg = output.split("ERROR:")[-1].strip()
+                    results.append(f"❌ {name}: {error_msg}")
+                else:
+                    results.append(f"⚠️ {name}: Status tidak jelas")
 
-📦 <b>Rclone config</b> sudah dicopy ke {name}
-🔗 <b>GDrive remote:</b> Terkonfigurasi
+            except Exception as e:
+                results.append(f"❌ {name}: {str(e)[:50]}")
 
-Sekarang bisa upload file dari VPS tumbal ke GDrive!""", parse_mode="HTML")
-            elif "ERROR:" in output:
-                error_msg = output.split("ERROR:")[-1].strip()
-                bot.send_message(call.message.chat.id, f"❌ {error_msg}")
-            else:
-                bot.send_message(call.message.chat.id, f"⚠️ Status tidak jelas:\n<code>{output[:500]}</code>", parse_mode="HTML")
+        # Kirim hasil
+        results_text = "\n".join(results)
+        bot.send_message(call.message.chat.id, f"""🔄 <b>HASIL SYNC</b>
+━━━━━━━━━━━━━━━━━━
 
-        except Exception as e:
-            bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
+{results_text}""", parse_mode="HTML")
 
     threading.Thread(target=do_sync, daemon=True).start()
 
