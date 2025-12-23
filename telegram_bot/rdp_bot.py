@@ -1529,7 +1529,7 @@ Gunakan command:
     markup.add(types.InlineKeyboardButton("💾 Memory", callback_data="qcmd_free"))
     markup.add(types.InlineKeyboardButton("📁 List /root", callback_data="qcmd_ls"))
     markup.add(types.InlineKeyboardButton("🖼 List Images", callback_data="qcmd_images"))
-    markup.add(types.InlineKeyboardButton("📂 Buat Folder Images", callback_data="qcmd_mkdir_images"))
+    markup.add(types.InlineKeyboardButton("📂 Buat Folder Images", callback_data="mkdir_images"))
     markup.add(types.InlineKeyboardButton("🔄 Uptime", callback_data="qcmd_uptime"))
     markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="tumbal_menu"))
 
@@ -1664,7 +1664,7 @@ def mkdir_cmd(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Error: {str(e)}")
 
-@bot.callback_query_handler(func=lambda call: call.data == "qcmd_mkdir_images")
+@bot.callback_query_handler(func=lambda call: call.data == "mkdir_images")
 def quick_mkdir_images(call):
     """Quick button untuk buat folder rdp-images"""
     if not is_owner(call.from_user.id):
