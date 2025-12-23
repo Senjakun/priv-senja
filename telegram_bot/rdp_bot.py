@@ -286,7 +286,10 @@ def select_rdp_type(call):
 # ==================== PILIH WINDOWS ====================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("win_"))
 def select_windows(call):
-    """Setelah pilih Windows, langsung tampilkan list image dari GDrive"""
+    """Setelah pilih Windows:
+    - Docker: langsung siap /install
+    - Dedicated: tampilkan list image .img/.img.gz dari GDrive
+    """
     if not is_allowed(call.from_user.id):
         bot.answer_callback_query(call.id, "⛔ Akses ditolak!")
         return
@@ -301,9 +304,28 @@ def select_windows(call):
     # Simpan pilihan OS user untuk dipakai saat /install
     USER_SELECTED_OS[call.from_user.id] = {"code": win_num, "name": win_name}
 
+    # Docker tidak pakai image GDrive
+    if rdp_type == "docker":
+        bot.answer_callback_query(call.id, f"✅ {win_name} dipilih")
+
+        text = f"""✅ <b>Pilihan Anda:</b>
+
+📦 <b>Tipe:</b> {type_name}
+🪟 <b>Windows:</b> {win_name}
+
+Kirim IP dan Password VPS dengan format:
+<code>/install IP PASSWORD</code>
+
+Contoh: <code>/install 167.71.123.45 password123</code>"""
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="install_rdp"))
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+        return
+
+    # Dedicated: wajib GDrive
     bot.answer_callback_query(call.id, f"✅ {win_name} - Loading images...")
 
-    # Langsung tampilkan list image dari GDrive
     rclone_conf = os.path.expanduser("~/.config/rclone/rclone.conf")
     if not os.path.exists(rclone_conf):
         text = f"""✅ <b>Pilihan Anda:</b>
@@ -315,36 +337,73 @@ def select_windows(call):
 
 Owner perlu setup GDrive dulu di menu:
 ⚙️ Settings Owner → ☁️ Google Drive Manager"""
-        
+
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="install_rdp"))
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
         return
 
     def list_and_show_images():
+        def human_size(n: int) -> str:
+            units = ["B", "KB", "MB", "GB", "TB"]
+            size = float(n)
+            for u in units:
+                if size < 1024 or u == units[-1]:
+                    if u == "B":
+                        return f"{int(size)} {u}"
+                    return f"{size:.1f} {u}"
+                size /= 1024
+            return f"{n} B"
+
         try:
             # Auto-create folder rdp-images jika belum ada
             subprocess.run(["rclone", "mkdir", "gdrive:rdp-images"], capture_output=True, timeout=30)
-            
-            # List images dari GDrive
+
+            # List file image (rekursif) agar folder tidak ke-detect sebagai file
             result = subprocess.run(
-                ["rclone", "lsf", "gdrive:rdp-images/", "--format", "ps"],
-                capture_output=True, text=True, timeout=30
+                [
+                    "rclone",
+                    "lsf",
+                    "gdrive:rdp-images/",
+                    "--recursive",
+                    "--files-only",
+                    "--format",
+                    "sp",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=45,
             )
 
-            files = []
+            files: list[tuple[str, int, bool]] = []  # (path, bytes, is_golden)
             if result.returncode == 0:
-                output = result.stdout.strip()
-                for line in output.split('\n'):
-                    if line.strip():
-                        parts = line.split(';')
-                        if len(parts) >= 2:
-                            size = parts[0].strip()
-                            name = parts[1].strip()
-                            if name:
-                                # Cek golden image
-                                is_golden = name.startswith("golden-") or "golden" in name.lower()
-                                files.append((name, size, is_golden))
+                output = (result.stdout or "").strip()
+                if output:
+                    for line in output.split("\n"):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        parts = line.split(";", 1)
+                        if len(parts) != 2:
+                            continue
+                        size_str, path = parts[0].strip(), parts[1].strip()
+                        if not path:
+                            continue
+
+                        base = os.path.basename(path)
+                        low = base.lower()
+
+                        # hanya terima file image
+                        if not (low.endswith(".img") or low.endswith(".img.gz")):
+                            continue
+
+                        try:
+                            size_bytes = int(size_str)
+                        except Exception:
+                            size_bytes = 0
+
+                        is_golden = "golden" in low
+                        files.append((path, size_bytes, is_golden))
 
             if not files:
                 text = f"""✅ <b>Pilihan Anda:</b>
@@ -352,31 +411,34 @@ Owner perlu setup GDrive dulu di menu:
 📦 <b>Tipe:</b> {type_name}
 🪟 <b>Windows:</b> {win_name}
 
-📋 <b>STOK IMAGE KOSONG</b>
+❌ <b>Belum ada image di GDrive</b>
 
-Belum ada image di GDrive.
-Owner perlu upload image dulu via Tumbal VPS."""
-                
+Upload file <code>.img</code> / <code>.img.gz</code> ke:
+<code>gdrive:rdp-images/</code>"""
+
                 markup = types.InlineKeyboardMarkup()
                 markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="install_rdp"))
                 bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
                 return
 
             # Pisahkan golden dan regular
-            golden_files = [(n, s) for n, s, g in files if g]
-            regular_files = [(n, s) for n, s, g in files if not g]
+            golden_files = [(p, s) for p, s, g in files if g]
+            regular_files = [(p, s) for p, s, g in files if not g]
+
+            # Simpan mapping pilihan → path (hindari callback_data kepanjangan)
+            USER_IMAGE_CHOICES[call.from_user.id] = {}
 
             files_text = ""
             if golden_files:
                 files_text += "🏆 <b>Golden Images (CEPAT 1-2 menit):</b>\n"
-                for name, size in golden_files[:5]:
-                    files_text += f"  📦 <code>{name}</code> ({size})\n"
+                for path, size in golden_files[:10]:
+                    files_text += f"  • <code>{os.path.basename(path)}</code> ({human_size(size)})\n"
                 files_text += "\n"
-            
+
             if regular_files:
                 files_text += "📁 <b>Regular Images:</b>\n"
-                for name, size in regular_files[:5]:
-                    files_text += f"  📦 <code>{name}</code> ({size})\n"
+                for path, size in regular_files[:10]:
+                    files_text += f"  • <code>{os.path.basename(path)}</code> ({human_size(size)})\n"
 
             text = f"""☁️ <b>PILIH IMAGE DARI GDRIVE</b>
 ━━━━━━━━━━━━━━━━━━
@@ -389,21 +451,32 @@ Owner perlu upload image dulu via Tumbal VPS."""
 
             markup = types.InlineKeyboardMarkup()
 
-            # Golden images first (prioritas)
-            for name, size in golden_files[:5]:
-                short_name = name[:25] + "..." if len(name) > 25 else name
-                markup.add(types.InlineKeyboardButton(
-                    f"🏆 {short_name} ({size})",
-                    callback_data=f"use_img:{name[:50]}"
-                ))
+            idx = 1
+            for path, size in golden_files[:20]:
+                choice_id = str(idx)
+                USER_IMAGE_CHOICES[call.from_user.id][choice_id] = path
+                short_name = os.path.basename(path)
+                short_name = short_name[:25] + "..." if len(short_name) > 25 else short_name
+                markup.add(
+                    types.InlineKeyboardButton(
+                        f"🏆 {short_name} ({human_size(size)})",
+                        callback_data=f"use_img:{choice_id}",
+                    )
+                )
+                idx += 1
 
-            # Regular images
-            for name, size in regular_files[:5]:
-                short_name = name[:25] + "..." if len(name) > 25 else name
-                markup.add(types.InlineKeyboardButton(
-                    f"📦 {short_name} ({size})",
-                    callback_data=f"use_img:{name[:50]}"
-                ))
+            for path, size in regular_files[:20]:
+                choice_id = str(idx)
+                USER_IMAGE_CHOICES[call.from_user.id][choice_id] = path
+                short_name = os.path.basename(path)
+                short_name = short_name[:25] + "..." if len(short_name) > 25 else short_name
+                markup.add(
+                    types.InlineKeyboardButton(
+                        f"📦 {short_name} ({human_size(size)})",
+                        callback_data=f"use_img:{choice_id}",
+                    )
+                )
+                idx += 1
 
             markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="install_rdp"))
 
@@ -414,10 +487,9 @@ Owner perlu upload image dulu via Tumbal VPS."""
 
     threading.Thread(target=list_and_show_images, daemon=True).start()
 
-# Handler src_gdrive dihapus - sudah terintegrasi langsung di select_windows
-
 # ==================== PILIH IMAGE DARI GDRIVE ====================
-USER_SELECTED_IMAGE = {}
+USER_SELECTED_IMAGE: dict[int, str] = {}
+USER_IMAGE_CHOICES: dict[int, dict[str, str]] = {}
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("use_img:"))
 def select_gdrive_image(call):
@@ -426,8 +498,16 @@ def select_gdrive_image(call):
         bot.answer_callback_query(call.id, "⛔ Akses ditolak!")
         return
 
-    image_name = call.data.replace("use_img:", "")
-    USER_SELECTED_IMAGE[call.from_user.id] = image_name
+    choice_id = call.data.replace("use_img:", "").strip()
+    choices = USER_IMAGE_CHOICES.get(call.from_user.id, {})
+
+    if not choice_id or choice_id not in choices:
+        bot.answer_callback_query(call.id, "❗ List image sudah kadaluarsa, buka lagi menu install.")
+        bot.send_message(call.message.chat.id, "❗ List image sudah kadaluarsa. Silakan buka lagi: 🖥 Install RDP")
+        return
+
+    image_path = choices[choice_id]
+    USER_SELECTED_IMAGE[call.from_user.id] = image_path
 
     saved = USER_SELECTED_OS.get(call.from_user.id)
     rdp_type = USER_SELECTED_TYPE.get(call.from_user.id, "docker")
@@ -438,7 +518,7 @@ def select_gdrive_image(call):
 
 📦 <b>Tipe:</b> {type_name}
 🪟 <b>Windows:</b> {win_name}
-☁️ <b>Image:</b> <code>{image_name}</code>
+☁️ <b>Image:</b> <code>{os.path.basename(image_path)}</code>
 
 Sekarang kirim IP dan Password VPS dengan format:
 <code>/install IP PASSWORD</code>
@@ -449,7 +529,7 @@ Contoh: <code>/install 167.71.123.45 password123</code>"""
     markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="install_rdp"))
 
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
-    bot.answer_callback_query(call.id, f"✅ Image: {image_name[:20]}...")
+    bot.answer_callback_query(call.id, f"✅ Image dipilih")
 
 # ==================== BACK TO MAIN ====================
 @bot.callback_query_handler(func=lambda call: call.data == "back_main")
@@ -719,33 +799,32 @@ def install_command(message):
         # Ambil image dari GDrive jika user sudah pilih
         gdrive_image = USER_SELECTED_IMAGE.get(message.from_user.id, "")
 
-        # Kirim pesan awal
-        image_info = f"\n☁️ <b>Image:</b> <code>{gdrive_image}</code>" if gdrive_image else "\n☁️ <b>Sumber:</b> Online"
-        bot.reply_to(
-            message,
-            f"""🔌 <b>Menghubungkan ke VPS...</b>
-
-📦 <b>Tipe:</b> {type_name}
-📍 <b>IP:</b> <code>{ip}</code>
-🪟 <b>Windows:</b> {win_name} ({win_code}){image_info}""",
-            parse_mode="HTML"
-        )
-
-        # Jalankan script instalasi berdasarkan tipe
-        script_dir = os.path.dirname(os.path.abspath(__file__))
+        # Dedicated wajib pilih image (hapus mode Online)
+        if rdp_type == "dedicated" and not gdrive_image:
+            bot.reply_to(
+                message,
+                "❗ Dedicated RDP wajib pilih <b>Image GDrive</b> dulu (tidak ada mode Online).\n\nBuka: 🖥 Install RDP → pilih Dedicated → pilih Windows → pilih Image.",
+                parse_mode="HTML",
+            )
+            return
 
         # Cek apakah pakai golden image (deploy cepat 1-2 menit)
-        is_golden_image = gdrive_image and (gdrive_image.startswith("golden-") or gdrive_image.endswith(".img") or gdrive_image.endswith(".img.gz"))
-        
-        if is_golden_image:
-            # Pakai deploy_golden_image.sh untuk golden image (cepat!)
-            script_path = os.path.join(script_dir, "deploy_golden_image.sh")
-            # Hapus ekstensi untuk nama image
-            image_name = gdrive_image.replace(".img.gz", "").replace(".img", "")
-        elif rdp_type == "docker":
-            script_path = os.path.join(script_dir, "rdp_docker.sh")
+        base_image = os.path.basename(gdrive_image) if gdrive_image else ""
+        is_golden_image = (
+            rdp_type == "dedicated"
+            and bool(gdrive_image)
+            and (base_image.lower().endswith(".img") or base_image.lower().endswith(".img.gz"))
+        )
+
+        # Kirim pesan awal + estimasi
+        if rdp_type == "docker":
+            eta_text = "10-15 menit"
+        elif is_golden_image:
+            eta_text = "1-2 menit (Golden Image)"
         else:
-            script_path = os.path.join(script_dir, "rdp_dedicated.sh")
+            eta_text = "15-30 menit"
+
+        image_info = f"\n☁️ <b>Image:</b> <code>{base_image}</code>" if gdrive_image else ""
 
         if not os.path.exists(script_path):
             bot.reply_to(message, f"❌ File {os.path.basename(script_path)} tidak ditemukan. Pastikan sudah git pull.")
@@ -3178,34 +3257,104 @@ def download_from_gdrive(message):
 
 # ==================== GDRIVE LIST ====================
 def _list_gdrive_files(chat_id, folder="rdp-images"):
-    """Helper untuk list file di GDrive"""
+    """Helper untuk list OS/image di GDrive (rekursif, hanya .img/.img.gz)"""
     try:
         result = subprocess.run(
-            ["rclone", "lsl", f"gdrive:{folder}/"],
+            [
+                "rclone",
+                "lsf",
+                f"gdrive:{folder}/",
+                "--recursive",
+                "--files-only",
+                "--format",
+                "sp",
+            ],
             capture_output=True,
             text=True,
-            timeout=60
+            timeout=90,
         )
 
-        if result.returncode == 0 and result.stdout.strip():
-            files = result.stdout.strip().split("\n")
-            file_list = []
-            for f in files[:20]:  # Max 20 files
-                parts = f.split()
-                if len(parts) >= 4:
-                    size = int(parts[0]) / (1024 * 1024 * 1024)  # GB
-                    name = parts[-1]
-                    file_list.append(f"• {name} ({size:.2f} GB)")
+        def guess_os_label(filename: str) -> str:
+            n = filename.lower()
+            if "server" in n or "2k" in n:
+                if "2012" in n or "2k12" in n:
+                    return "Windows Server 2012 R2"
+                if "2016" in n or "2k16" in n:
+                    return "Windows Server 2016"
+                if "2019" in n or "2k19" in n:
+                    return "Windows Server 2019"
+                if "2022" in n or "2k22" in n:
+                    return "Windows Server 2022"
+                if "2025" in n or "2k25" in n:
+                    return "Windows Server 2025"
 
-            text = f"""📋 <b>DAFTAR IMAGE DI GDRIVE</b>
+            if "tiny11" in n:
+                return "Tiny11 23H2"
+            if "tiny10" in n:
+                return "Tiny10 23H2"
+
+            if "superlite" in n:
+                if "11" in n:
+                    return "Windows 11 SuperLite"
+                return "Windows 10 SuperLite"
+
+            if "atlas" in n:
+                if "11" in n:
+                    return "Windows 11 Atlas"
+                return "Windows 10 Atlas"
+
+            if "pro" in n:
+                if "11" in n:
+                    return "Windows 11 Pro"
+                if "10" in n:
+                    return "Windows 10 Pro"
+
+            if "win11" in n or "windows11" in n or "windows-11" in n:
+                return "Windows 11"
+            if "win10" in n or "windows10" in n or "windows-10" in n:
+                return "Windows 10"
+
+            return os.path.basename(filename)
+
+        if result.returncode == 0 and (result.stdout or "").strip():
+            lines = (result.stdout or "").strip().split("\n")
+            image_paths: list[str] = []
+
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(";", 1)
+                if len(parts) != 2:
+                    continue
+                _, path = parts[0].strip(), parts[1].strip()
+                base = os.path.basename(path)
+                low = base.lower()
+                if low.endswith(".img") or low.endswith(".img.gz"):
+                    image_paths.append(path)
+
+            if not image_paths:
+                text = f"""📋 <b>DAFTAR OS IMAGE (GDRIVE)</b>
 ━━━━━━━━━━━━━━━━━━
 
-{chr(10).join(file_list) if file_list else "Tidak ada file"}
+Tidak ada file <code>.img</code>/<code>.img.gz</code> di:
+<code>gdrive:{folder}/</code>
 
-Total: {len(files)} file"""
+Total OS: 0"""
+            else:
+                os_set = {}
+                for p in image_paths:
+                    label = guess_os_label(os.path.basename(p))
+                    os_set[label] = True
+
+                os_list = sorted(os_set.keys())
+                text = f"""📋 <b>DAFTAR OS IMAGE (GDRIVE)</b>
+━━━━━━━━━━━━━━━━━━
+
+""" + "\n".join([f"• {name}" for name in os_list]) + f"\n\nTotal OS: {len(os_list)}"
         else:
             error_info = result.stderr[:200] if result.stderr else "Folder kosong"
-            text = f"""📋 <b>DAFTAR IMAGE DI GDRIVE</b>
+            text = f"""📋 <b>DAFTAR OS IMAGE (GDRIVE)</b>
 ━━━━━━━━━━━━━━━━━━
 
 Folder kosong atau error.
