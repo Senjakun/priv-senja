@@ -25,6 +25,49 @@ run_with_retries() {
     done
 }
 
+# Wait for apt/dpkg locks (common on fresh VPS due to unattended upgrades)
+wait_for_apt_locks() {
+    local -r timeout_seconds="${1:-300}"
+    local start_ts
+    start_ts="$(date +%s)"
+
+    while true; do
+        local locked=0
+
+        if command -v fuser >/dev/null 2>&1; then
+            fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 && locked=1 || true
+            fuser /var/lib/dpkg/lock >/dev/null 2>&1 && locked=1 || true
+            fuser /var/lib/apt/lists/lock >/dev/null 2>&1 && locked=1 || true
+            fuser /var/cache/apt/archives/lock >/dev/null 2>&1 && locked=1 || true
+        else
+            (pgrep -x apt >/dev/null 2>&1 || pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1) && locked=1 || true
+        fi
+
+        if [ "$locked" -eq 0 ]; then
+            return 0
+        fi
+
+        local now_ts
+        now_ts="$(date +%s)"
+        if [ $((now_ts - start_ts)) -ge "$timeout_seconds" ]; then
+            echo -e "${RED}❌ Masih ada proses apt/dpkg yang mengunci sistem (> ${timeout_seconds}s).${NC}"
+            echo -e "${YELLOW}➡️  Jalankan ini lalu ulangi installer:${NC}"
+            echo "   systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades 2>/dev/null || true"
+            echo "   killall apt apt-get dpkg 2>/dev/null || true"
+            echo "   dpkg --configure -a"
+            return 1
+        fi
+
+        echo -e "${YELLOW}⏳ Menunggu apt/dpkg lock dilepas...${NC}"
+        sleep 5
+    done
+}
+
+apt_get() {
+    wait_for_apt_locks 300
+    apt-get "$@"
+}
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -60,8 +103,8 @@ echo ""
 echo -e "${BLUE}⏳ Menginstall dependencies...${NC}"
 
 # Update & install dependencies (show output so it doesn't look stuck)
-run_with_retries 5 apt-get update
-run_with_retries 5 apt-get install -y \
+run_with_retries 5 apt_get update
+run_with_retries 5 apt_get install -y \
   -o Dpkg::Options::=--force-confdef \
   -o Dpkg::Options::=--force-confold \
   python3 python3-pip git sshpass curl
