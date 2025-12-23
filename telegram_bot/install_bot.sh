@@ -3,7 +3,27 @@
 # RDP BOT INSTALLER - One Click Setup
 # ==========================================
 
-set -e
+set -euo pipefail
+
+# Non-interactive install (prevents stuck prompts on Ubuntu)
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+
+# Retry helper (handles apt locks / slow mirrors)
+run_with_retries() {
+    local -r max_attempts="${1:-5}"; shift
+    local attempt=1
+
+    until "$@"; do
+        if [ "$attempt" -ge "$max_attempts" ]; then
+            echo -e "${RED}❌ Gagal menjalankan: $*${NC}"
+            return 1
+        fi
+        echo -e "${YELLOW}⚠️  Gagal (percobaan ${attempt}/${max_attempts}). Coba lagi 10 detik...${NC}"
+        attempt=$((attempt + 1))
+        sleep 10
+    done
+}
 
 # Colors
 RED='\033[0;31m'
@@ -39,12 +59,15 @@ INSTALL_DIR="/root/rdp-bot"
 echo ""
 echo -e "${BLUE}⏳ Menginstall dependencies...${NC}"
 
-# Update & install dependencies
-apt update -qq
-apt install -y python3 python3-pip git sshpass curl > /dev/null 2>&1
+# Update & install dependencies (show output so it doesn't look stuck)
+run_with_retries 5 apt-get update
+run_with_retries 5 apt-get install -y \
+  -o Dpkg::Options::=--force-confdef \
+  -o Dpkg::Options::=--force-confold \
+  python3 python3-pip git sshpass curl
 
-# Install Python packages
-pip3 install pyTeleBot paramiko requests -q
+# Install Python packages (no cache to reduce disk/ram pressure)
+PIP_DISABLE_PIP_VERSION_CHECK=1 run_with_retries 3 pip3 install --no-cache-dir pyTeleBot paramiko requests
 
 echo -e "${GREEN}✅ Dependencies terinstall${NC}"
 
