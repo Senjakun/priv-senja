@@ -369,6 +369,9 @@ Owner perlu setup GDrive dulu di menu:
 
     def list_gdrive_images():
         try:
+            # Auto-create folder rdp-images jika belum ada
+            subprocess.run(["rclone", "mkdir", "gdrive:rdp-images"], capture_output=True, timeout=30)
+            
             # List images dari GDrive
             result = subprocess.run(
                 ["rclone", "lsf", "gdrive:rdp-images/", "--format", "ps"],
@@ -376,7 +379,14 @@ Owner perlu setup GDrive dulu di menu:
             )
 
             if result.returncode != 0:
-                bot.send_message(call.message.chat.id, f"❌ Error: {result.stderr}")
+                error_msg = result.stderr.strip()
+                if "directory not found" in error_msg.lower():
+                    bot.send_message(call.message.chat.id, """📋 <b>STOK IMAGE KOSONG</b>
+
+Folder rdp-images belum ada di GDrive.
+Owner perlu build & upload image dulu via Tumbal VPS.""", parse_mode="HTML")
+                else:
+                    bot.send_message(call.message.chat.id, f"❌ Error: {error_msg}")
                 return
 
             output = result.stdout.strip()
@@ -2069,7 +2079,48 @@ def upload_from_list(call):
 
     def do_upload():
         try:
-            # Upload via rclone dari tumbal VPS (auto-install jika belum ada)
+            # Cek duplikat dulu sebelum upload
+            check_result = subprocess.run(
+                ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
+                 f"root@{ip}", f"""
+# Cek konfigurasi gdrive
+if ! rclone listremotes | grep -q "gdrive:"; then
+    echo "ERROR:GDrive belum dikonfigurasi"
+    exit 1
+fi
+
+# Auto-create folder rdp-images jika belum ada
+rclone mkdir gdrive:rdp-images 2>/dev/null
+
+# Cek apakah file sudah ada di GDrive (duplikat)
+if rclone lsf gdrive:rdp-images/ 2>/dev/null | grep -q "^{filename}$"; then
+    echo "DUPLICATE_EXISTS"
+else
+    echo "NO_DUPLICATE"
+fi
+"""],
+                capture_output=True, text=True, timeout=60
+            )
+            
+            check_output = check_result.stdout.strip()
+            
+            if "ERROR:" in check_output:
+                error_msg = check_output.split("ERROR:")[-1].strip()
+                bot.send_message(call.message.chat.id, f"❌ {error_msg}")
+                return
+            
+            # Jika duplikat, hapus yang lama dulu
+            if "DUPLICATE_EXISTS" in check_output:
+                bot.send_message(call.message.chat.id, f"⚠️ <b>File duplikat terdeteksi!</b>\n\n<code>{filename}</code> sudah ada di GDrive.\n🗑 Menghapus file lama dan upload yang baru...", parse_mode="HTML")
+                
+                # Hapus duplikat
+                subprocess.run(
+                    ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
+                     f"root@{ip}", f"rclone delete gdrive:rdp-images/{filename}"],
+                    capture_output=True, text=True, timeout=60
+                )
+            
+            # Upload via rclone dari tumbal VPS
             result = subprocess.run(
                 ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
                  f"root@{ip}", f"""
@@ -2079,7 +2130,6 @@ if ! command -v rclone &> /dev/null; then
     apt-get update -qq
     apt-get install -y rclone > /dev/null 2>&1
     if ! command -v rclone &> /dev/null; then
-        # Fallback: install via script
         curl -s https://rclone.org/install.sh | bash > /dev/null 2>&1
     fi
     if ! command -v rclone &> /dev/null; then
@@ -2087,12 +2137,6 @@ if ! command -v rclone &> /dev/null; then
         exit 1
     fi
     echo "✅ Rclone terinstall!"
-fi
-
-# Cek konfigurasi gdrive
-if ! rclone listremotes | grep -q "gdrive:"; then
-    echo "ERROR:GDrive belum dikonfigurasi. Jalankan 'rclone config' di VPS dulu."
-    exit 1
 fi
 
 if [ ! -f "{file_path}" ]; then
