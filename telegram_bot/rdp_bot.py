@@ -760,7 +760,15 @@ def install_command(message):
         # Jalankan script instalasi berdasarkan tipe
         script_dir = os.path.dirname(os.path.abspath(__file__))
 
-        if rdp_type == "docker":
+        # Cek apakah pakai golden image (deploy cepat 1-2 menit)
+        is_golden_image = gdrive_image and (gdrive_image.startswith("golden-") or gdrive_image.endswith(".img") or gdrive_image.endswith(".img.gz"))
+        
+        if is_golden_image:
+            # Pakai deploy_golden_image.sh untuk golden image (cepat!)
+            script_path = os.path.join(script_dir, "deploy_golden_image.sh")
+            # Hapus ekstensi untuk nama image
+            image_name = gdrive_image.replace(".img.gz", "").replace(".img", "")
+        elif rdp_type == "docker":
             script_path = os.path.join(script_dir, "rdp_docker.sh")
         else:
             script_path = os.path.join(script_dir, "rdp_dedicated.sh")
@@ -778,13 +786,22 @@ def install_command(message):
             try:
                 log_path = os.path.join(script_dir, "rdp_install.log")
 
-                # Tambahkan gdrive_image sebagai parameter ke-6
-                result = subprocess.run(
-                    ["bash", script_path, ip, password, win_code, chat_id, BOT_TOKEN, gdrive_image],
-                    capture_output=True,
-                    text=True,
-                    timeout=2400  # 40 menit timeout
-                )
+                if is_golden_image:
+                    # Deploy golden image (cepat 1-2 menit!)
+                    result = subprocess.run(
+                        ["bash", script_path, ip, password, image_name, chat_id, BOT_TOKEN],
+                        capture_output=True,
+                        text=True,
+                        timeout=600  # 10 menit timeout untuk golden image
+                    )
+                else:
+                    # Install biasa (15-30 menit)
+                    result = subprocess.run(
+                        ["bash", script_path, ip, password, win_code, chat_id, BOT_TOKEN, gdrive_image],
+                        capture_output=True,
+                        text=True,
+                        timeout=2400  # 40 menit timeout
+                    )
 
                 output = result.stdout + result.stderr
                 exit_code = result.returncode
@@ -833,6 +850,15 @@ Silakan coba lagi.""",
 
         # Kirim konfirmasi
         source_info = f"☁️ Image: {gdrive_image}" if gdrive_image else "☁️ Sumber: Online"
+        
+        # Estimasi waktu berdasarkan tipe
+        if is_golden_image:
+            time_estimate = "⚡ Golden Image: 1-2 menit"
+        elif rdp_type == "docker":
+            time_estimate = "🐳 Docker RDP: 10-15 menit"
+        else:
+            time_estimate = "🖥 Dedicated RDP: 15-30 menit"
+        
         bot.send_message(
             message.chat.id,
             f"""🚀 <b>Proses Instalasi Dimulai!</b>
@@ -847,8 +873,7 @@ Silakan coba lagi.""",
 Kamu akan menerima notifikasi saat selesai.
 
 <b>Estimasi waktu:</b>
-• Docker RDP: 10-15 menit
-• Dedicated RDP: 15-30 menit
+{time_estimate}
 
 💡 Kamu bisa menutup chat ini, notifikasi akan dikirim otomatis.""",
             parse_mode="HTML"
@@ -897,11 +922,144 @@ Bisa pakai banyak VPS untuk paralel build.
     markup.add(types.InlineKeyboardButton("📋 List & Pilih VPS", callback_data="tumbal_select"))
     markup.add(types.InlineKeyboardButton("🔌 Test Koneksi", callback_data="tumbal_test"))
     markup.add(types.InlineKeyboardButton("📟 Run Command", callback_data="tumbal_run"))
-    markup.add(types.InlineKeyboardButton("🏗 Build Image", callback_data="tumbal_build"))
+    markup.add(types.InlineKeyboardButton("🏗 Build Golden Image", callback_data="tumbal_build_golden"))
     markup.add(types.InlineKeyboardButton("📋 List Local Images", callback_data="tumbal_list"))
     markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="owner_settings"))
 
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
+# ==================== BUILD GOLDEN IMAGE MENU ====================
+@bot.callback_query_handler(func=lambda call: call.data == "tumbal_build_golden")
+def tumbal_build_golden_menu(call):
+    if not is_owner(call.from_user.id):
+        bot.answer_callback_query(call.id, "⛔ Hanya untuk owner!")
+        return
+
+    tumbal = get_active_tumbal()
+    if not tumbal:
+        bot.answer_callback_query(call.id, "❌ Belum ada VPS tumbal aktif!")
+        return
+
+    text = f"""🏗 <b>BUILD GOLDEN IMAGE</b>
+━━━━━━━━━━━━━━━━━━
+
+📍 <b>VPS:</b> {tumbal['name']} ({tumbal['ip']})
+
+<b>Pilih Windows untuk di-build:</b>
+
+Golden Image adalah Windows yang sudah:
+✅ Terinstall lengkap
+✅ RDP aktif
+✅ Driver lengkap
+✅ Siap clone ke VPS user
+
+⏱ <b>Estimasi build:</b> 30-60 menit
+💾 <b>Output:</b> ~5-10GB compressed"""
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🪟 Windows 10", callback_data="build_golden:10"))
+    markup.add(types.InlineKeyboardButton("🪟 Windows 11", callback_data="build_golden:11"))
+    markup.add(types.InlineKeyboardButton("🖥 Server 2019", callback_data="build_golden:2019"))
+    markup.add(types.InlineKeyboardButton("🖥 Server 2022", callback_data="build_golden:2022"))
+    markup.add(types.InlineKeyboardButton("⚡ Tiny10 (Light)", callback_data="build_golden:tiny10"))
+    markup.add(types.InlineKeyboardButton("⚡ Tiny11 (Light)", callback_data="build_golden:tiny11"))
+    markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="tumbal_menu"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
+# ==================== START BUILD GOLDEN IMAGE ====================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("build_golden:"))
+def start_build_golden(call):
+    if not is_owner(call.from_user.id):
+        bot.answer_callback_query(call.id, "⛔ Hanya untuk owner!")
+        return
+
+    tumbal = get_active_tumbal()
+    if not tumbal:
+        bot.answer_callback_query(call.id, "❌ Belum ada VPS tumbal aktif!")
+        return
+
+    win_code = call.data.replace("build_golden:", "")
+    win_names = {
+        "10": "Windows 10",
+        "11": "Windows 11", 
+        "2019": "Windows Server 2019",
+        "2022": "Windows Server 2022",
+        "tiny10": "Tiny10 23H2",
+        "tiny11": "Tiny11 23H2"
+    }
+    win_name = win_names.get(win_code, "Windows")
+    image_name = f"golden-{win_code}"
+
+    bot.answer_callback_query(call.id, f"⏳ Memulai build {win_name}...")
+
+    ip = tumbal["ip"]
+    password = tumbal["password"]
+    name = tumbal["name"]
+
+    bot.send_message(call.message.chat.id, f"""🏗 <b>BUILD GOLDEN IMAGE</b>
+━━━━━━━━━━━━━━━━━━
+
+📍 <b>VPS:</b> {name} ({ip})
+🪟 <b>Windows:</b> {win_name}
+📦 <b>Output:</b> {image_name}.img.gz
+
+⏳ <b>Proses build dimulai...</b>
+
+⏱ Estimasi: 30-60 menit
+💡 Kamu akan dinotifikasi saat selesai.
+
+📺 <b>Monitor via VNC:</b>
+   <code>{ip}:5900</code>""", parse_mode="HTML")
+
+    def run_build():
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            script_path = os.path.join(script_dir, "build_golden_image.sh")
+            
+            if not os.path.exists(script_path):
+                bot.send_message(call.message.chat.id, "❌ Script build_golden_image.sh tidak ditemukan!")
+                return
+            
+            # Copy script ke tumbal VPS
+            subprocess.run(["chmod", "+x", script_path], check=False)
+            subprocess.run(
+                ["sshpass", "-p", password, "scp", "-o", "StrictHostKeyChecking=no",
+                 script_path, f"root@{ip}:/root/build_golden_image.sh"],
+                capture_output=True, timeout=60
+            )
+            
+            # Jalankan script
+            result = subprocess.run(
+                ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
+                 "-o", "ServerAliveInterval=60", "-o", "ServerAliveCountMax=60",
+                 f"root@{ip}", f"bash /root/build_golden_image.sh {win_code} {image_name}"],
+                capture_output=True, text=True, timeout=7200  # 2 jam timeout
+            )
+            
+            if "BUILD COMPLETE" in result.stdout:
+                bot.send_message(call.message.chat.id, f"""✅ <b>BUILD SELESAI!</b>
+━━━━━━━━━━━━━━━━━━
+
+🪟 <b>Windows:</b> {win_name}
+📦 <b>File:</b> {image_name}.img.gz
+📍 <b>Lokasi:</b> /root/rdp-images/
+
+<b>Default Credentials:</b>
+• Username: <code>Admin</code>
+• Password: <code>Admin@123</code>
+
+📤 <b>Upload ke GDrive:</b>
+Gunakan menu "List Local Images" untuk upload.""", parse_mode="HTML")
+            else:
+                bot.send_message(call.message.chat.id, f"⚠️ Build mungkin gagal. Cek log:\n<code>{result.stdout[-1000:]}</code>", parse_mode="HTML")
+            
+        except subprocess.TimeoutExpired:
+            bot.send_message(call.message.chat.id, "⏰ Build timeout (>2 jam). Cek manual di VPS tumbal.")
+        except Exception as e:
+            bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
+
+    threading.Thread(target=run_build, daemon=True).start()
 
 # ==================== ADD TUMBAL VPS ====================
 @bot.callback_query_handler(func=lambda call: call.data == "tumbal_add")
