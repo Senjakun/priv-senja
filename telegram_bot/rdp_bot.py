@@ -1908,12 +1908,29 @@ def upload_from_list(call):
 
     def do_upload():
         try:
-            # Upload via rclone dari tumbal VPS
+            # Upload via rclone dari tumbal VPS (auto-install jika belum ada)
             result = subprocess.run(
                 ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
                  f"root@{ip}", f"""
+# Auto-install rclone jika belum ada
 if ! command -v rclone &> /dev/null; then
-    echo "ERROR:Rclone belum terinstall di VPS ini"
+    echo "📦 Rclone belum ada, menginstall..."
+    apt-get update -qq
+    apt-get install -y rclone > /dev/null 2>&1
+    if ! command -v rclone &> /dev/null; then
+        # Fallback: install via script
+        curl -s https://rclone.org/install.sh | bash > /dev/null 2>&1
+    fi
+    if ! command -v rclone &> /dev/null; then
+        echo "ERROR:Gagal install rclone"
+        exit 1
+    fi
+    echo "✅ Rclone terinstall!"
+fi
+
+# Cek konfigurasi gdrive
+if ! rclone listremotes | grep -q "gdrive:"; then
+    echo "ERROR:GDrive belum dikonfigurasi. Jalankan 'rclone config' di VPS dulu."
     exit 1
 fi
 
