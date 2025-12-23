@@ -3423,14 +3423,45 @@ def execute_delete_image(call):
 
     def do_delete():
         try:
-            # Gunakan deletefile untuk hapus file tunggal (lebih reliable)
-            result = subprocess.run(
-                ["rclone", "deletefile", f"gdrive:rdp-images/{filename}"],
-                capture_output=True, text=True, timeout=60
+            # Coba beberapa metode delete
+            # Method 1: rclone delete dengan path lengkap
+            full_path = f"gdrive:rdp-images/{filename}"
+            
+            # Cek dulu apakah file ada
+            check_result = subprocess.run(
+                ["rclone", "lsf", "gdrive:rdp-images/", "--include", filename],
+                capture_output=True, text=True, timeout=30
             )
+            
+            file_exists = filename in check_result.stdout
+            
+            if not file_exists:
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("🔄 Refresh List", callback_data="gdrive_delete"))
+                markup.add(types.InlineKeyboardButton("◀️ Menu GDrive", callback_data="gdrive_menu"))
+                
+                bot.send_message(call.message.chat.id, f"""⚠️ <b>FILE TIDAK DITEMUKAN</b>
 
-            # Cek jika berhasil atau file memang sudah tidak ada
-            if result.returncode == 0:
+📁 <code>{filename}</code>
+
+File mungkin sudah dihapus atau nama berubah.""", parse_mode="HTML", reply_markup=markup)
+                return
+            
+            # Method: gunakan rclone delete dengan filter
+            result = subprocess.run(
+                ["rclone", "delete", "gdrive:rdp-images/", "--include", filename, "-v"],
+                capture_output=True, text=True, timeout=120
+            )
+            
+            # Verifikasi apakah file sudah terhapus
+            verify_result = subprocess.run(
+                ["rclone", "lsf", "gdrive:rdp-images/", "--include", filename],
+                capture_output=True, text=True, timeout=30
+            )
+            
+            file_deleted = filename not in verify_result.stdout
+            
+            if file_deleted:
                 markup = types.InlineKeyboardMarkup()
                 markup.add(types.InlineKeyboardButton("🗑 Hapus Lainnya", callback_data="gdrive_delete"))
                 markup.add(types.InlineKeyboardButton("◀️ Menu GDrive", callback_data="gdrive_menu"))
@@ -3441,22 +3472,14 @@ def execute_delete_image(call):
 
 File sudah dihapus dari Google Drive.""", parse_mode="HTML", reply_markup=markup)
             else:
-                error_msg = result.stderr.strip()
-                # Jika file tidak ditemukan, mungkin sudah dihapus
-                if "not found" in error_msg.lower() or "doesn't exist" in error_msg.lower():
-                    markup = types.InlineKeyboardMarkup()
-                    markup.add(types.InlineKeyboardButton("🔄 Refresh List", callback_data="gdrive_delete"))
-                    markup.add(types.InlineKeyboardButton("◀️ Menu GDrive", callback_data="gdrive_menu"))
-                    
-                    bot.send_message(call.message.chat.id, f"""⚠️ <b>FILE TIDAK DITEMUKAN</b>
+                error_msg = result.stderr.strip() if result.stderr else result.stdout.strip()
+                bot.send_message(call.message.chat.id, f"""❌ <b>GAGAL HAPUS!</b>
 
 📁 <code>{filename}</code>
 
-File mungkin sudah dihapus sebelumnya atau nama file berubah.""", parse_mode="HTML", reply_markup=markup)
-                else:
-                    bot.send_message(call.message.chat.id, f"""❌ <b>GAGAL HAPUS!</b>
+<code>{error_msg[:500] if error_msg else 'Unknown error'}</code>
 
-<code>{error_msg[:300]}</code>""", parse_mode="HTML")
+Coba hapus manual: <code>rclone delete gdrive:rdp-images/{filename}</code>""", parse_mode="HTML")
 
         except Exception as e:
             bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
