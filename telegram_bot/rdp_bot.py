@@ -1548,52 +1548,44 @@ Jalankan dulu:
 <code>/configgdrive [client_id] [client_secret]</code>""", parse_mode="HTML")
         return
 
-    bot.reply_to(message, "⏳ Generating OAuth link...")
+    # Baca client_id dari config
+    try:
+        import configparser
+        config = configparser.ConfigParser()
+        config.read(config_path)
+        
+        if 'gdrive' not in config.sections():
+            bot.reply_to(message, "❌ Config gdrive tidak ditemukan. Jalankan /configgdrive dulu.")
+            return
+        
+        client_id = config.get('gdrive', 'client_id', fallback=None)
+        if not client_id:
+            bot.reply_to(message, "❌ Client ID tidak ditemukan di config.")
+            return
 
-    def generate_auth():
-        try:
-            # Jalankan rclone authorize untuk mendapatkan link
-            process = subprocess.Popen(
-                ["rclone", "authorize", "drive"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True
-            )
+        # Generate OAuth URL langsung
+        import urllib.parse
+        redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+        scope = "https://www.googleapis.com/auth/drive"
+        
+        auth_url = (
+            f"https://accounts.google.com/o/oauth2/auth"
+            f"?client_id={urllib.parse.quote(client_id)}"
+            f"&redirect_uri={urllib.parse.quote(redirect_uri)}"
+            f"&response_type=code"
+            f"&scope={urllib.parse.quote(scope)}"
+            f"&access_type=offline"
+            f"&prompt=consent"
+        )
 
-            output_lines = []
-            auth_url = None
-            
-            # Baca output dan cari URL
-            import time
-            start_time = time.time()
-            while time.time() - start_time < 30:  # Timeout 30 detik
-                line = process.stdout.readline()
-                if not line:
-                    break
-                output_lines.append(line)
-                
-                # Cari URL OAuth
-                if "http" in line and "google" in line.lower():
-                    # Extract URL dari line
-                    import re
-                    urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', line)
-                    if urls:
-                        auth_url = urls[0]
-                        break
-
-            if auth_url:
-                # Simpan PID process untuk nanti
-                data = load_data()
-                data["gdrive_auth_pid"] = process.pid
-                save_data(data)
-
-                bot.send_message(
-                    message.chat.id,
-                    f"""🔗 <b>AUTHORIZE GOOGLE DRIVE</b>
+        bot.reply_to(
+            message,
+            f"""🔗 <b>AUTHORIZE GOOGLE DRIVE</b>
 ━━━━━━━━━━━━━━━━━━
 
 <b>Step 1:</b> Buka link berikut di browser:
-<code>{auth_url}</code>
+
+{auth_url}
 
 <b>Step 2:</b> Login dengan akun Google
 
@@ -1602,34 +1594,19 @@ Jalankan dulu:
 <b>Step 4:</b> Kirim kode dengan command:
 <code>/gdrivecode [kode_verifikasi]</code>
 
-⏰ Link berlaku 10 menit""",
-                    parse_mode="HTML"
-                )
-            else:
-                # Fallback: manual method
-                bot.send_message(
-                    message.chat.id,
-                    f"""⚠️ <b>Tidak bisa generate link otomatis</b>
+⏰ Kode berlaku beberapa menit saja""",
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
 
-Gunakan metode manual di VPS:
-<code>rclone config reconnect gdrive:</code>
-
-Output:
-<code>{chr(10).join(output_lines[:10])}</code>""",
-                    parse_mode="HTML"
-                )
-                process.terminate()
-
-        except Exception as e:
-            bot.send_message(message.chat.id, f"❌ Error: {str(e)}")
-
-    threading.Thread(target=generate_auth, daemon=True).start()
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error: {str(e)}")
 
 
 # ==================== GDRIVE CODE (Submit OAuth Code) ====================
 @bot.message_handler(commands=['gdrivecode'])
 def gdrive_code(message):
-    """Submit kode verifikasi OAuth Google Drive"""
+    """Submit kode verifikasi OAuth Google Drive dan exchange ke token"""
     if not is_owner(message.from_user.id):
         bot.reply_to(message, "⛔ Hanya owner!")
         return
@@ -1649,22 +1626,59 @@ Contoh:
 
         def process_code():
             try:
-                # Jalankan rclone config dengan input otomatis
-                config_script = f'''
-                    cd ~/.config/rclone
-                    rclone config reconnect gdrive: << EOF
-{auth_code}
-EOF
-                '''
+                import configparser
+                import json
                 
-                result = subprocess.run(
-                    ["bash", "-c", config_script],
-                    capture_output=True,
-                    text=True,
-                    timeout=60
-                )
-
-                # Cek apakah berhasil dengan test akses
+                config_path = os.path.expanduser("~/.config/rclone/rclone.conf")
+                config = configparser.ConfigParser()
+                config.read(config_path)
+                
+                client_id = config.get('gdrive', 'client_id')
+                client_secret = config.get('gdrive', 'client_secret')
+                
+                # Exchange auth code untuk access token
+                import urllib.request
+                import urllib.parse
+                
+                token_url = "https://oauth2.googleapis.com/token"
+                data = urllib.parse.urlencode({
+                    'client_id': client_id,
+                    'client_secret': client_secret,
+                    'code': auth_code,
+                    'grant_type': 'authorization_code',
+                    'redirect_uri': 'urn:ietf:wg:oauth:2.0:oob'
+                }).encode()
+                
+                req = urllib.request.Request(token_url, data=data, method='POST')
+                req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+                
+                with urllib.request.urlopen(req, timeout=30) as response:
+                    token_data = json.loads(response.read().decode())
+                
+                if 'access_token' not in token_data:
+                    bot.send_message(
+                        message.chat.id,
+                        f"❌ Gagal mendapatkan token: {token_data.get('error_description', 'Unknown error')}",
+                        parse_mode="HTML"
+                    )
+                    return
+                
+                # Format token untuk rclone
+                import time
+                token_json = json.dumps({
+                    "access_token": token_data['access_token'],
+                    "token_type": "Bearer",
+                    "refresh_token": token_data.get('refresh_token', ''),
+                    "expiry": time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(time.time() + token_data.get('expires_in', 3600)))
+                })
+                
+                # Update rclone config dengan token
+                config.set('gdrive', 'token', token_json)
+                
+                with open(config_path, 'w') as f:
+                    config.write(f)
+                
+                # Test koneksi
                 test_result = subprocess.run(
                     ["rclone", "lsd", "gdrive:"],
                     capture_output=True,
@@ -1680,24 +1694,31 @@ EOF
 Sekarang kamu bisa:
 • <code>/upload [file] [folder]</code> - Upload ke GDrive
 • <code>/download [path] [local]</code> - Download dari GDrive
-• Gunakan menu Google Drive di /settings""",
+• Gunakan menu Google Drive di /start → Settings Owner""",
                         parse_mode="HTML"
                     )
                 else:
-                    # Fallback method - update config langsung dengan token
                     bot.send_message(
                         message.chat.id,
-                        f"""⚠️ <b>Verifikasi gagal</b>
+                        f"""⚠️ <b>Token tersimpan tapi test gagal</b>
 
-Coba metode manual di VPS:
-1. SSH ke VPS
-2. Jalankan: <code>rclone config reconnect gdrive:</code>
-3. Paste kode verifikasi
+Error: <code>{test_result.stderr[:300] if test_result.stderr else 'Unknown'}</code>
 
-Error: <code>{test_result.stderr[:200] if test_result.stderr else 'Unknown'}</code>""",
+Coba restart bot dan test lagi dengan /gdrivelist""",
                         parse_mode="HTML"
                     )
 
+            except urllib.error.HTTPError as e:
+                error_body = e.read().decode() if e.fp else str(e)
+                bot.send_message(
+                    message.chat.id,
+                    f"""❌ <b>Gagal exchange token</b>
+
+Pastikan kode verifikasi benar dan belum expired.
+
+Error: <code>{error_body[:300]}</code>""",
+                    parse_mode="HTML"
+                )
             except Exception as e:
                 bot.send_message(message.chat.id, f"❌ Error: {str(e)}")
 
