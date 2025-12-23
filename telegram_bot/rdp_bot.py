@@ -1502,11 +1502,11 @@ Contoh:
         os.makedirs(config_dir, exist_ok=True)
 
         config_content = f"""[gdrive]
-type = drive
-client_id = {client_id}
-client_secret = {client_secret}
-scope = drive
-"""
+ type = drive
+ client_id = {client_id}
+ client_secret = {client_secret}
+ scope = drive.file
+ """
 
         with open(os.path.join(config_dir, "rclone.conf"), "w") as f:
             f.write(config_content)
@@ -1761,7 +1761,7 @@ Buat ulang OAuth Client (TV/limited input) lalu jalankan /configgdrive lagi.""",
 
                 # Simpan token ke rclone.conf
                 expiry_iso = time.strftime(
-                    "%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + int(expires))
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + int(expires))
                 )
                 token_json = json.dumps(
                     {
@@ -1882,9 +1882,9 @@ Contoh:
                     "access_token": token_data['access_token'],
                     "token_type": "Bearer",
                     "refresh_token": token_data.get('refresh_token', ''),
-                    "expiry": time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(time.time() + token_data.get('expires_in', 3600)))
+                    "expiry": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() + token_data.get('expires_in', 3600)))
                 })
-                
+
                 # Update rclone config dengan token
                 config.set('gdrive', 'token', token_json)
                 
