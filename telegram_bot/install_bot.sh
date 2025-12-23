@@ -79,7 +79,7 @@ apt_get() {
 install_python_packages() {
     echo -e "${BLUE}⏳ Menginstall Python packages...${NC}"
     
-    local packages="pyTeleBot paramiko requests"
+local packages="pyTelegramBotAPI paramiko requests"
     
     # Method 1: python3 -m pip dengan --break-system-packages (Ubuntu 23+)
     if python3 -m pip install --no-cache-dir --break-system-packages $packages 2>/dev/null; then
@@ -170,11 +170,11 @@ if verify_python_packages; then
 else
     echo -e "${RED}❌ Gagal install Python packages!${NC}"
     echo -e "${YELLOW}Mencoba install manual...${NC}"
-    pip3 install pyTeleBot paramiko requests || true
+    pip3 install pyTelegramBotAPI paramiko requests || true
     
     if ! verify_python_packages; then
         echo -e "${RED}❌ Python packages masih gagal. Coba manual:${NC}"
-        echo "pip3 install pyTeleBot paramiko requests"
+        echo "pip3 install pyTelegramBotAPI paramiko requests"
         exit 1
     fi
 fi
@@ -229,9 +229,9 @@ cat > $INSTALL_DIR/start_bot.sh << 'STARTSCRIPT'
 # Auto-install dependencies if missing
 if ! python3 -c "import telebot, paramiko, requests" 2>/dev/null; then
     echo "Installing missing Python packages..."
-    pip3 install --break-system-packages pyTeleBot paramiko requests 2>/dev/null || \
-    pip3 install pyTeleBot paramiko requests 2>/dev/null || \
-    python3 -m pip install pyTeleBot paramiko requests
+    pip3 install --break-system-packages pyTelegramBotAPI paramiko requests 2>/dev/null || \
+    pip3 install pyTelegramBotAPI paramiko requests 2>/dev/null || \
+    python3 -m pip install pyTelegramBotAPI paramiko requests
 fi
 
 # Run bot
