@@ -31,6 +31,34 @@ if ":" not in BOT_TOKEN:
     raise SystemExit("BOT_TOKEN tidak valid (Token must contain a colon). Set BOT_TOKEN yang benar.")
 
 
+def resolve_env_path() -> str:
+    """Resolve persistent .env path (prefer project root /root/rdp-bot/.env)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    cwd_env = os.path.join(os.getcwd(), ".env")
+    here_env = os.path.join(here, ".env")
+    parent_env = os.path.join(os.path.dirname(here), ".env")
+
+    for p in (cwd_env, parent_env, here_env):
+        if os.path.exists(p):
+            return p
+
+    # Default: if script inside telegram_bot/, write one level above
+    if os.path.basename(here) == "telegram_bot":
+        return parent_env
+    return here_env
+
+
+def write_env(bot_token: str, owner_id: int) -> str:
+    env_path = resolve_env_path()
+    with open(env_path, "w") as f:
+        f.write(f"BOT_TOKEN={bot_token}\n")
+        f.write(f"OWNER_ID={owner_id}\n")
+    try:
+        os.chmod(env_path, 0o600)
+    except Exception:
+        pass
+    return env_path
+
 # File untuk menyimpan data
 DATA_FILE = "bot_data.json"
 
@@ -450,12 +478,8 @@ def set_bot_token(message):
             bot.reply_to(message, "❌ Token tidak valid (harus ada tanda ':'). Contoh: /settoken 123456:ABC-xyz")
             return
 
-        # Simpan ke .env di folder bot (agar tidak hilang saat git pull / update)
-        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-        owner_env = os.getenv("OWNER_ID") or str(OWNER_ID)
-        with open(env_path, "w") as f:
-            f.write(f"BOT_TOKEN={new_token}\n")
-            f.write(f"OWNER_ID={owner_env}\n")
+        owner_env = int(os.getenv("OWNER_ID") or OWNER_ID)
+        env_path = write_env(new_token, owner_env)
 
         bot.reply_to(
             message,
@@ -470,6 +494,7 @@ def set_bot_token(message):
         )
     except IndexError:
         bot.reply_to(message, "❌ Format: /settoken [token_baru]\nContoh: /settoken 123456:ABC-xyz")
+
 
 
 # ==================== SET OWNER ID ====================
@@ -487,12 +512,8 @@ def set_owner_id(message):
             data["allowed_users"].append(new_owner)
             save_data(data)
 
-        # Simpan ke .env agar konsisten
-        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
         token_env = os.getenv("BOT_TOKEN") or BOT_TOKEN
-        with open(env_path, "w") as f:
-            f.write(f"BOT_TOKEN={token_env}\n")
-            f.write(f"OWNER_ID={new_owner}\n")
+        env_path = write_env(token_env, new_owner)
 
         bot.reply_to(
             message,
@@ -507,6 +528,7 @@ def set_owner_id(message):
         )
     except (IndexError, ValueError):
         bot.reply_to(message, "❌ Format: /setownerid [telegram_id]\nContoh: /setownerid 123456789")
+
 
 
 # ==================== LIST USER ====================
