@@ -1995,6 +1995,7 @@ def gdrive_menu(call):
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🔧 Setup Rclone + GDrive", callback_data="gdrive_setup"))
+    markup.add(types.InlineKeyboardButton("🔄 Sync Config ke Tumbal", callback_data="gdrive_sync_config"))
     markup.add(types.InlineKeyboardButton("📤 Upload Image", callback_data="gdrive_upload"))
     markup.add(types.InlineKeyboardButton("📥 Download Image", callback_data="gdrive_download"))
     markup.add(types.InlineKeyboardButton("📋 List Images", callback_data="gdrive_list"))
@@ -2002,6 +2003,102 @@ def gdrive_menu(call):
     markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="owner_settings"))
 
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
+# ==================== SYNC GDRIVE CONFIG TO TUMBAL ====================
+@bot.callback_query_handler(func=lambda call: call.data == "gdrive_sync_config")
+def gdrive_sync_config(call):
+    """Copy rclone.conf dari bot server ke VPS tumbal aktif"""
+    if not is_owner(call.from_user.id):
+        bot.answer_callback_query(call.id, "⛔ Hanya untuk owner!")
+        return
+
+    tumbal = get_active_tumbal()
+    if not tumbal:
+        bot.answer_callback_query(call.id, "❌ Belum ada VPS tumbal aktif!")
+        return
+
+    # Cek apakah rclone.conf ada di bot server
+    rclone_conf = os.path.expanduser("~/.config/rclone/rclone.conf")
+    if not os.path.exists(rclone_conf):
+        bot.answer_callback_query(call.id, "❌ rclone.conf tidak ada di bot server!")
+        bot.send_message(call.message.chat.id, """❌ <b>Rclone belum dikonfigurasi di bot server!</b>
+
+Jalankan dulu di bot server:
+<code>rclone config</code>
+
+Setelah itu baru bisa sync ke VPS tumbal.""", parse_mode="HTML")
+        return
+
+    bot.answer_callback_query(call.id, "⏳ Syncing config...")
+    
+    ip = tumbal["ip"]
+    password = tumbal["password"]
+    name = tumbal["name"]
+
+    bot.send_message(call.message.chat.id, f"""🔄 <b>SYNC GDRIVE CONFIG</b>
+━━━━━━━━━━━━━━━━━━
+
+📤 <b>Dari:</b> Bot Server
+📥 <b>Ke:</b> {name} ({ip})
+
+⏳ Proses sync dimulai...""", parse_mode="HTML")
+
+    def do_sync():
+        try:
+            # Baca isi rclone.conf
+            with open(rclone_conf, 'r') as f:
+                conf_content = f.read()
+            
+            # Escape content untuk bash
+            escaped_content = conf_content.replace("'", "'\\''")
+            
+            # Copy ke VPS tumbal via SSH
+            result = subprocess.run(
+                ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
+                 f"root@{ip}", f"""
+# Install rclone jika belum ada
+if ! command -v rclone &> /dev/null; then
+    apt-get update -qq
+    apt-get install -y rclone > /dev/null 2>&1 || curl -s https://rclone.org/install.sh | bash > /dev/null 2>&1
+fi
+
+# Buat folder config
+mkdir -p ~/.config/rclone
+
+# Tulis rclone.conf
+cat > ~/.config/rclone/rclone.conf << 'RCLONE_EOF'
+{conf_content}
+RCLONE_EOF
+
+# Verify
+if rclone listremotes | grep -q "gdrive:"; then
+    echo "SUCCESS"
+else
+    echo "ERROR:Config tersimpan tapi gdrive remote tidak ditemukan"
+fi
+"""],
+                capture_output=True, text=True, timeout=120
+            )
+
+            output = result.stdout.strip()
+            
+            if "SUCCESS" in output:
+                bot.send_message(call.message.chat.id, f"""✅ <b>Sync Berhasil!</b>
+
+📦 <b>Rclone config</b> sudah dicopy ke {name}
+🔗 <b>GDrive remote:</b> Terkonfigurasi
+
+Sekarang bisa upload file dari VPS tumbal ke GDrive!""", parse_mode="HTML")
+            elif "ERROR:" in output:
+                error_msg = output.split("ERROR:")[-1].strip()
+                bot.send_message(call.message.chat.id, f"❌ {error_msg}")
+            else:
+                bot.send_message(call.message.chat.id, f"⚠️ Status tidak jelas:\n<code>{output[:500]}</code>", parse_mode="HTML")
+
+        except Exception as e:
+            bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
+
+    threading.Thread(target=do_sync, daemon=True).start()
 
 # ==================== GDRIVE SETUP ====================
 @bot.callback_query_handler(func=lambda call: call.data == "gdrive_setup")
