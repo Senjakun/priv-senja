@@ -2090,6 +2090,50 @@ def download_from_gdrive(message):
         bot.reply_to(message, f"❌ Error: {str(e)}")
 
 # ==================== GDRIVE LIST ====================
+def _list_gdrive_files(chat_id, folder="rdp-images"):
+    """Helper untuk list file di GDrive"""
+    try:
+        result = subprocess.run(
+            ["rclone", "lsl", f"gdrive:{folder}/"],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        if result.returncode == 0 and result.stdout.strip():
+            files = result.stdout.strip().split("\n")
+            file_list = []
+            for f in files[:20]:  # Max 20 files
+                parts = f.split()
+                if len(parts) >= 4:
+                    size = int(parts[0]) / (1024 * 1024 * 1024)  # GB
+                    name = parts[-1]
+                    file_list.append(f"• {name} ({size:.2f} GB)")
+
+            text = f"""📋 <b>DAFTAR IMAGE DI GDRIVE</b>
+━━━━━━━━━━━━━━━━━━
+
+{chr(10).join(file_list) if file_list else "Tidak ada file"}
+
+Total: {len(files)} file"""
+        else:
+            error_info = result.stderr[:200] if result.stderr else "Folder kosong"
+            text = f"""📋 <b>DAFTAR IMAGE DI GDRIVE</b>
+━━━━━━━━━━━━━━━━━━
+
+Folder kosong atau error.
+
+<code>{error_info}</code>"""
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔄 Refresh", callback_data="gdrive_list"))
+        markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="gdrive_menu"))
+
+        bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Error: {str(e)}")
+
 @bot.callback_query_handler(func=lambda call: call.data == "gdrive_list")
 def gdrive_list_menu(call):
     if not is_owner(call.from_user.id):
@@ -2097,50 +2141,17 @@ def gdrive_list_menu(call):
         return
 
     bot.answer_callback_query(call.id, "⏳ Mengambil daftar file...")
+    threading.Thread(target=_list_gdrive_files, args=(call.message.chat.id,), daemon=True).start()
 
-    def list_files():
-        try:
-            result = subprocess.run(
-                ["rclone", "lsl", "gdrive:rdp-images/"],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
+@bot.message_handler(commands=['gdrivelist'])
+def gdrive_list_cmd(message):
+    """Command /gdrivelist - List file di Google Drive"""
+    if not is_owner(message.from_user.id):
+        bot.reply_to(message, "⛔ Hanya owner!")
+        return
 
-            if result.returncode == 0 and result.stdout.strip():
-                files = result.stdout.strip().split("\n")
-                file_list = []
-                for f in files[:20]:  # Max 20 files
-                    parts = f.split()
-                    if len(parts) >= 4:
-                        size = int(parts[0]) / (1024 * 1024 * 1024)  # GB
-                        name = parts[-1]
-                        file_list.append(f"• {name} ({size:.2f} GB)")
-
-                text = f"""📋 <b>DAFTAR IMAGE DI GDRIVE</b>
-━━━━━━━━━━━━━━━━━━
-
-{chr(10).join(file_list) if file_list else "Tidak ada file"}
-
-Total: {len(files)} file"""
-            else:
-                text = """📋 <b>DAFTAR IMAGE DI GDRIVE</b>
-━━━━━━━━━━━━━━━━━━
-
-Folder kosong atau belum dikonfigurasi.
-
-Pastikan sudah setup GDrive dengan benar."""
-
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("🔄 Refresh", callback_data="gdrive_list"))
-            markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="gdrive_menu"))
-
-            bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
-
-        except Exception as e:
-            bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
-
-    threading.Thread(target=list_files, daemon=True).start()
+    bot.reply_to(message, "⏳ Mengambil daftar file...")
+    threading.Thread(target=_list_gdrive_files, args=(message.chat.id,), daemon=True).start()
 
 # ==================== GDRIVE DELETE ====================
 @bot.callback_query_handler(func=lambda call: call.data == "gdrive_delete")
