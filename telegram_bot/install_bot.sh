@@ -109,10 +109,31 @@ run_with_retries 5 apt_get install -y \
   -o Dpkg::Options::=--force-confold \
   python3 python3-pip git sshpass curl
 
-# Install Python packages (no cache to reduce disk/ram pressure)
-PIP_DISABLE_PIP_VERSION_CHECK=1 run_with_retries 3 pip3 install --no-cache-dir pyTeleBot paramiko requests
+# Install Python packages using python3 -m pip (more reliable)
+echo -e "${BLUE}⏳ Menginstall Python packages...${NC}"
+PIP_DISABLE_PIP_VERSION_CHECK=1 run_with_retries 3 python3 -m pip install --no-cache-dir --break-system-packages pyTeleBot paramiko requests 2>/dev/null || \
+PIP_DISABLE_PIP_VERSION_CHECK=1 run_with_retries 3 python3 -m pip install --no-cache-dir pyTeleBot paramiko requests
 
-echo -e "${GREEN}✅ Dependencies terinstall${NC}"
+# Verify Python packages installed correctly
+echo -e "${BLUE}⏳ Verifikasi Python packages...${NC}"
+if python3 -c "import telebot, paramiko, requests" 2>/dev/null; then
+    echo -e "${GREEN}✅ Python packages terinstall${NC}"
+else
+    echo -e "${YELLOW}⚠️  Mencoba install ulang dengan pip3...${NC}"
+    pip3 install --break-system-packages pyTeleBot paramiko requests 2>/dev/null || \
+    pip3 install pyTeleBot paramiko requests
+    
+    # Final check
+    if python3 -c "import telebot, paramiko, requests" 2>/dev/null; then
+        echo -e "${GREEN}✅ Python packages terinstall${NC}"
+    else
+        echo -e "${RED}❌ Gagal install Python packages!${NC}"
+        echo "Coba manual: pip3 install pyTeleBot paramiko requests"
+        exit 1
+    fi
+fi
+
+echo -e "${GREEN}✅ Semua dependencies terinstall${NC}"
 
 # Clone or copy repo
 if [ -n "$GITHUB_REPO" ]; then
