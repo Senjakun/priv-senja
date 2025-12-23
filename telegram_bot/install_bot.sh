@@ -79,7 +79,8 @@ apt_get() {
 install_python_packages() {
     echo -e "${BLUE}⏳ Menginstall Python packages...${NC}"
     
-local packages="pyTelegramBotAPI paramiko requests"
+    # All required packages including Google Drive API
+    local packages="pyTelegramBotAPI paramiko requests google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2"
     
     # Method 1: python3 -m pip dengan --break-system-packages (Ubuntu 23+)
     if python3 -m pip install --no-cache-dir --break-system-packages $packages 2>/dev/null; then
@@ -110,6 +111,11 @@ local packages="pyTelegramBotAPI paramiko requests"
     fi
     
     return 1
+}
+
+# Verify Python packages
+verify_python_packages() {
+    python3 -c "import telebot, paramiko, requests; from googleapiclient.discovery import build" 2>/dev/null
 }
 
 # Verify Python packages
@@ -170,11 +176,11 @@ if verify_python_packages; then
 else
     echo -e "${RED}❌ Gagal install Python packages!${NC}"
     echo -e "${YELLOW}Mencoba install manual...${NC}"
-    pip3 install pyTelegramBotAPI paramiko requests || true
+    pip3 install pyTelegramBotAPI paramiko requests google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2 || true
     
     if ! verify_python_packages; then
         echo -e "${RED}❌ Python packages masih gagal. Coba manual:${NC}"
-        echo "pip3 install pyTelegramBotAPI paramiko requests"
+        echo "pip3 install pyTelegramBotAPI paramiko requests google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2"
         exit 1
     fi
 fi
@@ -226,12 +232,17 @@ fi
 echo -e "${BLUE}⏳ Membuat startup script...${NC}"
 cat > $INSTALL_DIR/start_bot.sh << 'STARTSCRIPT'
 #!/bin/bash
+cd "$(dirname "$0")"
+
+PACKAGES="pyTelegramBotAPI paramiko requests google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2"
+
 # Auto-install dependencies if missing
-if ! python3 -c "import telebot, paramiko, requests" 2>/dev/null; then
+if ! python3 -c "import telebot, paramiko, requests; from googleapiclient.discovery import build" 2>/dev/null; then
     echo "Installing missing Python packages..."
-    pip3 install --break-system-packages pyTelegramBotAPI paramiko requests 2>/dev/null || \
-    pip3 install pyTelegramBotAPI paramiko requests 2>/dev/null || \
-    python3 -m pip install pyTelegramBotAPI paramiko requests
+    pip3 install --break-system-packages $PACKAGES 2>/dev/null || \
+    pip3 install $PACKAGES 2>/dev/null || \
+    python3 -m pip install --break-system-packages $PACKAGES 2>/dev/null || \
+    python3 -m pip install $PACKAGES
 fi
 
 # Run bot
