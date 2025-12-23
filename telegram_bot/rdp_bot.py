@@ -1494,26 +1494,71 @@ def tumbal_list_images(call):
             password = tumbal["password"]
             name = tumbal["name"]
 
+            # Hitung jumlah file dan list dengan ukuran
             result = subprocess.run(
                 ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
-                 f"root@{ip}", "ls -lhS /root/rdp-images/ 2>/dev/null || echo 'EMPTY'"],
+                 f"root@{ip}", """
+mkdir -p /root/rdp-images
+cd /root/rdp-images
+count=$(find . -maxdepth 1 -type f 2>/dev/null | wc -l)
+echo "FILE_COUNT:$count"
+if [ "$count" -gt 0 ]; then
+    ls -lhS --time-style=+"%Y-%m-%d %H:%M" 2>/dev/null | grep -v "^total"
+fi
+"""],
                 capture_output=True, text=True, timeout=30
             )
 
-            if "EMPTY" in result.stdout or not result.stdout.strip():
+            output = result.stdout.strip()
+            
+            # Parse file count
+            file_count = 0
+            for line in output.split('\n'):
+                if line.startswith("FILE_COUNT:"):
+                    try:
+                        file_count = int(line.replace("FILE_COUNT:", "").strip())
+                    except:
+                        pass
+                    break
+
+            if file_count == 0:
                 text = f"""📋 <b>LOCAL IMAGES DI {name.upper()}</b>
 ━━━━━━━━━━━━━━━━━━
 
 📍 IP: <code>{ip}</code>
 
-Folder kosong. Belum ada image yang dibuild."""
+📁 <b>Total: 0 file</b>
+
+Folder kosong. Belum ada image yang dibuild.
+Gunakan <b>🏗 Build Image</b> untuk membuat image baru."""
             else:
+                # Parse file list
+                files_info = []
+                for line in output.split('\n'):
+                    if line.startswith("FILE_COUNT:") or not line.strip():
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 7:
+                        size = parts[4]
+                        date = parts[5] if len(parts) > 5 else ""
+                        time = parts[6] if len(parts) > 6 else ""
+                        filename = ' '.join(parts[7:]) if len(parts) > 7 else parts[-1]
+                        files_info.append(f"📦 <code>{filename}</code>\n   📐 {size} | 📅 {date} {time}")
+                
+                files_text = '\n\n'.join(files_info) if files_info else output
+                
                 text = f"""📋 <b>LOCAL IMAGES DI {name.upper()}</b>
 ━━━━━━━━━━━━━━━━━━
 
 📍 IP: <code>{ip}</code>
 
-<code>{result.stdout}</code>"""
+📁 <b>Total: {file_count} file</b>
+
+{files_text}
+
+━━━━━━━━━━━━━━━━━━
+<b>Upload ke GDrive:</b>
+<code>/upload /root/rdp-images/[nama_file] rdp-images</code>"""
 
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("🔄 Refresh", callback_data="tumbal_list"))
