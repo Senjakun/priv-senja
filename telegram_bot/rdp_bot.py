@@ -1529,6 +1529,7 @@ Gunakan command:
     markup.add(types.InlineKeyboardButton("💾 Memory", callback_data="qcmd_free"))
     markup.add(types.InlineKeyboardButton("📁 List /root", callback_data="qcmd_ls"))
     markup.add(types.InlineKeyboardButton("🖼 List Images", callback_data="qcmd_images"))
+    markup.add(types.InlineKeyboardButton("📂 Buat Folder Images", callback_data="qcmd_mkdir_images"))
     markup.add(types.InlineKeyboardButton("🔄 Uptime", callback_data="qcmd_uptime"))
     markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="tumbal_menu"))
 
@@ -1593,6 +1594,123 @@ def quick_cmd(call):
             bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
 
     threading.Thread(target=execute_cmd, daemon=True).start()
+
+# ==================== MKDIR COMMAND ====================
+@bot.message_handler(commands=['mkdir'])
+def mkdir_cmd(message):
+    """Command /mkdir - Buat folder di VPS tumbal"""
+    if not is_owner(message.from_user.id):
+        bot.reply_to(message, "⛔ Hanya owner!")
+        return
+
+    tumbal = get_active_tumbal()
+    if not tumbal:
+        bot.reply_to(message, "❌ Belum ada VPS tumbal aktif!")
+        return
+
+    try:
+        parts = message.text.split(maxsplit=1)
+        if len(parts) < 2:
+            bot.reply_to(message, """📁 <b>BUAT FOLDER</b>
+
+<b>Format:</b> <code>/mkdir [path]</code>
+
+<b>Contoh:</b>
+<code>/mkdir /root/rdp-images</code>
+<code>/mkdir /root/backup</code>
+<code>/mkdir /home/data/windows</code>
+
+💡 Otomatis pakai <code>mkdir -p</code> (buat parent folder jika belum ada)""", parse_mode="HTML")
+            return
+
+        folder_path = parts[1].strip()
+        ip = tumbal["ip"]
+        password = tumbal["password"]
+        name = tumbal["name"]
+
+        bot.reply_to(message, f"⏳ Membuat folder di <b>{name}</b>...", parse_mode="HTML")
+
+        def create_folder():
+            try:
+                result = subprocess.run(
+                    ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
+                     "-o", "ConnectTimeout=15", f"root@{ip}", f"mkdir -p {folder_path} && echo 'SUCCESS' && ls -la {folder_path}"],
+                    capture_output=True, text=True, timeout=30
+                )
+
+                if "SUCCESS" in result.stdout:
+                    output = result.stdout.replace("SUCCESS\n", "").strip()
+                    text = f"""✅ <b>Folder Berhasil Dibuat!</b>
+━━━━━━━━━━━━━━━━━━
+
+📁 <b>Path:</b> <code>{folder_path}</code>
+📍 <b>VPS:</b> {name}
+
+<b>Isi folder:</b>
+<code>{output if output else '(kosong)'}</code>"""
+                else:
+                    error = result.stderr.strip() if result.stderr else result.stdout
+                    text = f"""❌ <b>Gagal Buat Folder!</b>
+
+<code>{error[:500]}</code>"""
+
+                bot.send_message(message.chat.id, text, parse_mode="HTML")
+
+            except Exception as e:
+                bot.send_message(message.chat.id, f"❌ Error: {str(e)}")
+
+        threading.Thread(target=create_folder, daemon=True).start()
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error: {str(e)}")
+
+@bot.callback_query_handler(func=lambda call: call.data == "qcmd_mkdir_images")
+def quick_mkdir_images(call):
+    """Quick button untuk buat folder rdp-images"""
+    if not is_owner(call.from_user.id):
+        bot.answer_callback_query(call.id, "⛔ Hanya untuk owner!")
+        return
+
+    tumbal = get_active_tumbal()
+    if not tumbal:
+        bot.answer_callback_query(call.id, "❌ Belum ada VPS aktif!")
+        return
+
+    ip = tumbal["ip"]
+    password = tumbal["password"]
+    name = tumbal["name"]
+
+    bot.answer_callback_query(call.id, "⏳ Membuat folder...")
+
+    def create_folder():
+        try:
+            result = subprocess.run(
+                ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
+                 "-o", "ConnectTimeout=15", f"root@{ip}", "mkdir -p /root/rdp-images && echo 'SUCCESS' && ls -la /root/rdp-images"],
+                capture_output=True, text=True, timeout=30
+            )
+
+            if "SUCCESS" in result.stdout:
+                text = f"""✅ <b>Folder /root/rdp-images Siap!</b>
+━━━━━━━━━━━━━━━━━━
+
+📍 <b>VPS:</b> {name}
+📁 <b>Path:</b> <code>/root/rdp-images/</code>
+
+Folder sudah siap untuk menyimpan image."""
+            else:
+                text = f"❌ Gagal: {result.stderr[:300]}"
+
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("📋 List Images", callback_data="tumbal_list"))
+            markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="tumbal_run"))
+
+            bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+
+        except Exception as e:
+            bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
+
+    threading.Thread(target=create_folder, daemon=True).start()
 
 # ==================== LIST LOCAL IMAGES ====================
 @bot.message_handler(commands=['listlocal'])
