@@ -78,50 +78,46 @@ apt_get() {
 # Install Python packages dengan berbagai metode
 install_python_packages() {
     echo -e "${BLUE}⏳ Menginstall Python packages...${NC}"
-    
-    # All required packages including Google Drive API
-    local packages="pyTelegramBotAPI paramiko requests google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2"
-    
+
+    # Packages required by rdp_bot.py (GDrive feature uses rclone, not google-api-python-client)
+    local packages="pyTelegramBotAPI paramiko requests"
+
     # Method 1: python3 -m pip dengan --break-system-packages (Ubuntu 23+)
     if python3 -m pip install --no-cache-dir --break-system-packages $packages 2>/dev/null; then
         return 0
     fi
-    
+
     # Method 2: python3 -m pip tanpa --break-system-packages (Ubuntu 22 dan sebelumnya)
     if python3 -m pip install --no-cache-dir $packages 2>/dev/null; then
         return 0
     fi
-    
+
     # Method 3: pip3 langsung dengan --break-system-packages
     if pip3 install --break-system-packages $packages 2>/dev/null; then
         return 0
     fi
-    
+
     # Method 4: pip3 langsung
     if pip3 install $packages 2>/dev/null; then
         return 0
     fi
-    
+
     # Method 5: Install pip dulu kalau belum ada
     echo -e "${YELLOW}⚠️  Mencoba install pip terlebih dahulu...${NC}"
     apt_get install -y python3-pip 2>/dev/null || true
-    
+
     if pip3 install $packages 2>/dev/null; then
         return 0
     fi
-    
-    return 1
-}
 
-# Verify Python packages
-verify_python_packages() {
-    python3 -c "import telebot, paramiko, requests; from googleapiclient.discovery import build" 2>/dev/null
+    return 1
 }
 
 # Verify Python packages
 verify_python_packages() {
     python3 -c "import telebot, paramiko, requests" 2>/dev/null
 }
+
 
 echo -e "${BLUE}"
 echo "╔═══════════════════════════════════════╗"
@@ -176,11 +172,11 @@ if verify_python_packages; then
 else
     echo -e "${RED}❌ Gagal install Python packages!${NC}"
     echo -e "${YELLOW}Mencoba install manual...${NC}"
-    pip3 install pyTelegramBotAPI paramiko requests google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2 || true
-    
+    pip3 install pyTelegramBotAPI paramiko requests || true
+
     if ! verify_python_packages; then
         echo -e "${RED}❌ Python packages masih gagal. Coba manual:${NC}"
-        echo "pip3 install pyTelegramBotAPI paramiko requests google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2"
+        echo "pip3 install pyTelegramBotAPI paramiko requests"
         exit 1
     fi
 fi
@@ -232,21 +228,35 @@ fi
 echo -e "${BLUE}⏳ Membuat startup script...${NC}"
 cat > $INSTALL_DIR/start_bot.sh << 'STARTSCRIPT'
 #!/bin/bash
+set -euo pipefail
 cd "$(dirname "$0")"
 
-PACKAGES="pyTelegramBotAPI paramiko requests google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2"
-
-# Auto-install dependencies if missing
-if ! python3 -c "import telebot, paramiko, requests; from googleapiclient.discovery import build" 2>/dev/null; then
-    echo "Installing missing Python packages..."
-    pip3 install --break-system-packages $PACKAGES 2>/dev/null || \
-    pip3 install $PACKAGES 2>/dev/null || \
-    python3 -m pip install --break-system-packages $PACKAGES 2>/dev/null || \
-    python3 -m pip install $PACKAGES
+# Auto-detect bot path
+BOT_FILE=""
+if [ -f "./rdp_bot.py" ]; then
+  BOT_FILE="./rdp_bot.py"
+elif [ -f "./telegram_bot/rdp_bot.py" ]; then
+  BOT_FILE="./telegram_bot/rdp_bot.py"
+else
+  echo "❌ rdp_bot.py tidak ditemukan di $(pwd)" >&2
+  ls -la >&2
+  exit 1
 fi
 
-# Run bot
-exec python3 rdp_bot.py
+# Quick sanity check for token placeholder (prevents silent restart loop)
+if grep -q 'BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"' "$BOT_FILE"; then
+  echo "❌ BOT_TOKEN masih placeholder. Update BOT_TOKEN dulu (atau jalankan installer lagi)." >&2
+  exit 1
+fi
+
+# Auto-install dependencies if missing
+if ! python3 -c "import telebot, paramiko, requests" 2>/dev/null; then
+  echo "Installing missing Python packages..." >&2
+  python3 -m pip install --no-cache-dir pyTelegramBotAPI paramiko requests 2>/dev/null || \
+  pip3 install pyTelegramBotAPI paramiko requests 2>/dev/null || true
+fi
+
+exec python3 -u "$BOT_FILE"
 STARTSCRIPT
 chmod +x $INSTALL_DIR/start_bot.sh
 
