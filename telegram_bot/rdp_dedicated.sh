@@ -165,9 +165,21 @@ else
 fi
 
 echo "INSTALL_SUCCESS"
+
+# SECURITY: Hapus rclone config setelah download selesai
+echo "🔒 Cleaning up rclone config..."
+rm -rf ~/.config/rclone
+rm -f ~/.rclone.conf
+echo "✅ Rclone config dihapus dari VPS user"
 ENDSSH
 
 RESULT=$?
+
+# SECURITY: Pastikan rclone config dihapus dari VPS user (double check)
+if [ -n "$GDRIVE_IMAGE" ]; then
+    echo "🔒 Double-check: Menghapus rclone config dari VPS user..."
+    sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" "rm -rf ~/.config/rclone ~/.rclone.conf /root/.config/rclone 2>/dev/null; echo 'Cleaned'" 2>/dev/null || true
+fi
 
 if [ $RESULT -eq 0 ]; then
     echo "✅ Instalasi berhasil!"
@@ -209,6 +221,9 @@ elif [ $RESULT -eq 3 ]; then
 <b>Solusi:</b> Gunakan VPS dengan disk minimal 25GB"
     exit 1
 else
+    # Tetap hapus rclone config meski gagal
+    sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" "rm -rf ~/.config/rclone ~/.rclone.conf /root/.config/rclone 2>/dev/null" 2>/dev/null || true
+    
     send_telegram "❌ <b>INSTALASI GAGAL!</b>
 
 📍 <b>IP:</b> <code>$IP</code>
