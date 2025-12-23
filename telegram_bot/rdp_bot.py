@@ -3423,11 +3423,13 @@ def execute_delete_image(call):
 
     def do_delete():
         try:
+            # Gunakan deletefile untuk hapus file tunggal (lebih reliable)
             result = subprocess.run(
-                ["rclone", "delete", f"gdrive:rdp-images/{filename}"],
+                ["rclone", "deletefile", f"gdrive:rdp-images/{filename}"],
                 capture_output=True, text=True, timeout=60
             )
 
+            # Cek jika berhasil atau file memang sudah tidak ada
             if result.returncode == 0:
                 markup = types.InlineKeyboardMarkup()
                 markup.add(types.InlineKeyboardButton("🗑 Hapus Lainnya", callback_data="gdrive_delete"))
@@ -3439,9 +3441,22 @@ def execute_delete_image(call):
 
 File sudah dihapus dari Google Drive.""", parse_mode="HTML", reply_markup=markup)
             else:
-                bot.send_message(call.message.chat.id, f"""❌ <b>GAGAL HAPUS!</b>
+                error_msg = result.stderr.strip()
+                # Jika file tidak ditemukan, mungkin sudah dihapus
+                if "not found" in error_msg.lower() or "doesn't exist" in error_msg.lower():
+                    markup = types.InlineKeyboardMarkup()
+                    markup.add(types.InlineKeyboardButton("🔄 Refresh List", callback_data="gdrive_delete"))
+                    markup.add(types.InlineKeyboardButton("◀️ Menu GDrive", callback_data="gdrive_menu"))
+                    
+                    bot.send_message(call.message.chat.id, f"""⚠️ <b>FILE TIDAK DITEMUKAN</b>
 
-<code>{result.stderr[:300]}</code>""", parse_mode="HTML")
+📁 <code>{filename}</code>
+
+File mungkin sudah dihapus sebelumnya atau nama file berubah.""", parse_mode="HTML", reply_markup=markup)
+                else:
+                    bot.send_message(call.message.chat.id, f"""❌ <b>GAGAL HAPUS!</b>
+
+<code>{error_msg[:300]}</code>""", parse_mode="HTML")
 
         except Exception as e:
             bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
@@ -3466,8 +3481,9 @@ def delete_from_gdrive(message):
 
         def do_delete():
             try:
+                # Gunakan deletefile untuk file tunggal
                 result = subprocess.run(
-                    ["rclone", "delete", f"gdrive:{file_path}"],
+                    ["rclone", "deletefile", f"gdrive:{file_path}"],
                     capture_output=True,
                     text=True,
                     timeout=60
@@ -3480,7 +3496,11 @@ def delete_from_gdrive(message):
                         parse_mode="HTML"
                     )
                 else:
-                    bot.send_message(message.chat.id, f"❌ Gagal menghapus:\n<code>{result.stderr[:500]}</code>", parse_mode="HTML")
+                    error_msg = result.stderr.strip()
+                    if "not found" in error_msg.lower():
+                        bot.send_message(message.chat.id, f"⚠️ File tidak ditemukan (mungkin sudah dihapus):\n{file_path}")
+                    else:
+                        bot.send_message(message.chat.id, f"❌ Gagal menghapus:\n<code>{error_msg[:500]}</code>", parse_mode="HTML")
             except Exception as e:
                 bot.send_message(message.chat.id, f"❌ Error: {str(e)}")
 
