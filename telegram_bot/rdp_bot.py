@@ -1619,7 +1619,9 @@ Jalankan dulu:
             payload = urllib.parse.urlencode(
                 {
                     "client_id": client_id,
-                    "scope": "https://www.googleapis.com/auth/drive",
+                    # Device Code Flow Google hanya support scope Drive tertentu (bukan full drive)
+                    # https://developers.google.com/identity/protocols/oauth2/limited-input-device#allowedscopes
+                    "scope": "https://www.googleapis.com/auth/drive.file",
                 }
             ).encode()
 
