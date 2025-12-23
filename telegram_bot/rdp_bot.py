@@ -1805,7 +1805,7 @@ cd /root/rdp-images
 count=$(find . -maxdepth 1 -type f 2>/dev/null | wc -l)
 echo "FILE_COUNT:$count"
 if [ "$count" -gt 0 ]; then
-    ls -lhS --time-style=+"%Y-%m-%d %H:%M" 2>/dev/null | grep -v "^total"
+    ls -1 --time-style=+"%Y-%m-%d" -lhS 2>/dev/null | grep -v "^total" | awk '{print $5"|"$6"|"$NF}'
 fi
 """],
                 capture_output=True, text=True, timeout=30
@@ -1815,13 +1815,24 @@ fi
             
             # Parse file count
             file_count = 0
+            files_list = []  # List of (filename, size, date)
+            
             for line in output.split('\n'):
                 if line.startswith("FILE_COUNT:"):
                     try:
                         file_count = int(line.replace("FILE_COUNT:", "").strip())
                     except:
                         pass
-                    break
+                elif "|" in line:
+                    parts = line.split("|")
+                    if len(parts) >= 3:
+                        size = parts[0]
+                        date = parts[1]
+                        filename = parts[2]
+                        if filename and filename not in ['.', '..']:
+                            files_list.append((filename, size, date))
+
+            markup = types.InlineKeyboardMarkup()
 
             if file_count == 0:
                 text = f"""📋 <b>LOCAL IMAGES DI {name.upper()}</b>
@@ -1831,23 +1842,19 @@ fi
 
 📁 <b>Total: 0 file</b>
 
-Folder kosong. Belum ada image yang dibuild.
-Gunakan <b>🏗 Build Image</b> untuk membuat image baru."""
-            else:
-                # Parse file list
-                files_info = []
-                for line in output.split('\n'):
-                    if line.startswith("FILE_COUNT:") or not line.strip():
-                        continue
-                    parts = line.split()
-                    if len(parts) >= 7:
-                        size = parts[4]
-                        date = parts[5] if len(parts) > 5 else ""
-                        time = parts[6] if len(parts) > 6 else ""
-                        filename = ' '.join(parts[7:]) if len(parts) > 7 else parts[-1]
-                        files_info.append(f"📦 <code>{filename}</code>\n   📐 {size} | 📅 {date} {time}")
+Folder kosong. Gunakan <b>🏗 Build Image</b> untuk membuat image."""
                 
-                files_text = '\n\n'.join(files_info) if files_info else output
+                markup.add(types.InlineKeyboardButton("🏗 Build Image", callback_data="tumbal_build"))
+            else:
+                # Build file list text
+                files_text = ""
+                for i, (filename, size, date) in enumerate(files_list[:10]):  # Max 10 files
+                    files_text += f"📦 <code>{filename}</code>\n   📐 {size} | 📅 {date}\n\n"
+                    # Add upload button for each file
+                    markup.add(types.InlineKeyboardButton(
+                        f"📤 Upload: {filename[:25]}{'...' if len(filename) > 25 else ''}", 
+                        callback_data=f"ul_img:{filename[:50]}"
+                    ))
                 
                 text = f"""📋 <b>LOCAL IMAGES DI {name.upper()}</b>
 ━━━━━━━━━━━━━━━━━━
@@ -1857,12 +1864,8 @@ Gunakan <b>🏗 Build Image</b> untuk membuat image baru."""
 📁 <b>Total: {file_count} file</b>
 
 {files_text}
+💡 Klik tombol di bawah untuk upload ke GDrive"""
 
-━━━━━━━━━━━━━━━━━━
-<b>Upload ke GDrive:</b>
-<code>/upload /root/rdp-images/[nama_file] rdp-images</code>"""
-
-            markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("🔄 Refresh", callback_data="tumbal_list"))
             markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="tumbal_menu"))
 
@@ -1872,6 +1875,84 @@ Gunakan <b>🏗 Build Image</b> untuk membuat image baru."""
             bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
 
     threading.Thread(target=list_images, daemon=True).start()
+
+# ==================== UPLOAD FROM LIST BUTTON ====================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("ul_img:"))
+def upload_from_list(call):
+    """Upload file dari list dengan satu klik"""
+    if not is_owner(call.from_user.id):
+        bot.answer_callback_query(call.id, "⛔ Hanya untuk owner!")
+        return
+
+    tumbal = get_active_tumbal()
+    if not tumbal:
+        bot.answer_callback_query(call.id, "❌ Belum ada VPS aktif!")
+        return
+
+    filename = call.data.replace("ul_img:", "")
+    file_path = f"/root/rdp-images/{filename}"
+    ip = tumbal["ip"]
+    password = tumbal["password"]
+    name = tumbal["name"]
+
+    bot.answer_callback_query(call.id, f"⏳ Uploading {filename}...")
+
+    bot.send_message(call.message.chat.id, f"""📤 <b>UPLOAD KE GDRIVE</b>
+━━━━━━━━━━━━━━━━━━
+
+📁 <b>File:</b> <code>{filename}</code>
+📍 <b>Dari:</b> {name} ({ip})
+☁️ <b>Ke:</b> GDrive/rdp-images/
+
+⏳ Proses upload dimulai...""", parse_mode="HTML")
+
+    def do_upload():
+        try:
+            # Upload via rclone dari tumbal VPS
+            result = subprocess.run(
+                ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
+                 f"root@{ip}", f"""
+if ! command -v rclone &> /dev/null; then
+    echo "ERROR:Rclone belum terinstall di VPS ini"
+    exit 1
+fi
+
+if [ ! -f "{file_path}" ]; then
+    echo "ERROR:File tidak ditemukan: {file_path}"
+    exit 1
+fi
+
+echo "⏳ Uploading {filename}..."
+rclone copy "{file_path}" gdrive:rdp-images/ -P 2>&1
+
+if [ $? -eq 0 ]; then
+    echo "SUCCESS"
+else
+    echo "ERROR:Upload gagal"
+fi
+"""],
+                capture_output=True, text=True, timeout=7200
+            )
+
+            output = result.stdout.strip()
+            
+            if "SUCCESS" in output:
+                bot.send_message(call.message.chat.id, f"""✅ <b>Upload Berhasil!</b>
+
+📁 <b>File:</b> <code>{filename}</code>
+☁️ <b>Lokasi:</b> GDrive/rdp-images/{filename}""", parse_mode="HTML")
+            elif "ERROR:" in output:
+                error_msg = output.split("ERROR:")[-1].strip()
+                bot.send_message(call.message.chat.id, f"❌ {error_msg}")
+            else:
+                bot.send_message(call.message.chat.id, f"⚠️ Status tidak jelas:\n<code>{output[:500]}</code>", parse_mode="HTML")
+
+        except subprocess.TimeoutExpired:
+            bot.send_message(call.message.chat.id, "⏰ Upload timeout (>2 jam)")
+        except Exception as e:
+            bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
+
+    threading.Thread(target=do_upload, daemon=True).start()
 
 # ==================== GOOGLE DRIVE MENU ====================
 @bot.callback_query_handler(func=lambda call: call.data == "gdrive_menu")
