@@ -1996,9 +1996,7 @@ def gdrive_menu(call):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🔧 Setup Rclone + GDrive", callback_data="gdrive_setup"))
     markup.add(types.InlineKeyboardButton("🔄 Sync Config ke Tumbal", callback_data="gdrive_sync_config"))
-    markup.add(types.InlineKeyboardButton("📤 Upload Image", callback_data="gdrive_upload"))
-    markup.add(types.InlineKeyboardButton("📥 Download Image", callback_data="gdrive_download"))
-    markup.add(types.InlineKeyboardButton("📋 List Images", callback_data="gdrive_list"))
+    markup.add(types.InlineKeyboardButton("📋 List Images di GDrive", callback_data="gdrive_list"))
     markup.add(types.InlineKeyboardButton("🗑 Delete Image", callback_data="gdrive_delete"))
     markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="owner_settings"))
 
