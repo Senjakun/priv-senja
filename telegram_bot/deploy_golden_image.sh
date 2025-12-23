@@ -6,7 +6,7 @@
 
 IP=$1
 PASSWORD=$2
-IMAGE_NAME=$3
+IMAGE_PATH=$3  # contoh: win10-golden.img.gz atau folder/win10-golden.img.gz
 CHAT_ID=$4
 BOT_TOKEN=$5
 
@@ -21,16 +21,18 @@ send_telegram() {
 }
 
 # Validasi
-if [ -z "$IP" ] || [ -z "$PASSWORD" ] || [ -z "$IMAGE_NAME" ]; then
-    echo "Usage: bash deploy_golden_image.sh [IP] [PASSWORD] [IMAGE_NAME] [CHAT_ID] [BOT_TOKEN]"
+if [ -z "$IP" ] || [ -z "$PASSWORD" ] || [ -z "$IMAGE_PATH" ]; then
+    echo "Usage: bash deploy_golden_image.sh [IP] [PASSWORD] [IMAGE_PATH] [CHAT_ID] [BOT_TOKEN]"
     exit 1
 fi
+
+IMAGE_BASENAME=$(basename "$IMAGE_PATH")
 
 echo "================================================"
 echo "🚀 DEPLOY GOLDEN IMAGE"
 echo "================================================"
 echo "📍 Target IP: $IP"
-echo "📦 Image: $IMAGE_NAME"
+echo "📦 Image: $IMAGE_PATH"
 echo "================================================"
 
 # Install sshpass
@@ -43,7 +45,7 @@ if ! sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15
     send_telegram "❌ <b>DEPLOY GAGAL!</b>
 
 📍 <b>IP:</b> <code>$IP</code>
-📦 <b>Image:</b> $IMAGE_NAME
+📦 <b>Image:</b> $IMAGE_BASENAME
 
 <b>Penyebab:</b> Tidak bisa konek ke VPS
 
@@ -60,7 +62,7 @@ send_telegram "🚀 <b>DEPLOY GOLDEN IMAGE</b>
 ━━━━━━━━━━━━━━━━━━
 
 📍 <b>IP:</b> <code>$IP</code>
-📦 <b>Image:</b> $IMAGE_NAME
+📦 <b>Image:</b> $IMAGE_BASENAME
 
 ⏳ Proses deploy dimulai...
 Estimasi: 1-2 menit"
@@ -69,13 +71,13 @@ Estimasi: 1-2 menit"
 RCLONE_CONF="$HOME/.config/rclone/rclone.conf"
 if [ -f "$RCLONE_CONF" ]; then
     echo "📤 Syncing rclone config..."
-    
+
     sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" << 'RCLONE_SETUP'
 apt-get update -qq
 apt-get install -y rclone pigz pv > /dev/null 2>&1
 mkdir -p ~/.config/rclone
 RCLONE_SETUP
-    
+
     sshpass -p "$PASSWORD" scp -o StrictHostKeyChecking=no "$RCLONE_CONF" root@"$IP":~/.config/rclone/rclone.conf
 fi
 
@@ -83,7 +85,7 @@ fi
 echo "🚀 Deploying image..."
 START_TIME=$(date +%s)
 
-sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 root@"$IP" "IMAGE_NAME='$IMAGE_NAME' bash -s" << 'DEPLOY_SCRIPT'
+sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 root@"$IP" "IMAGE_PATH='$IMAGE_PATH' bash -s" << 'DEPLOY_SCRIPT'
 set -e
 
 echo "📥 Downloading golden image from GDrive..."
@@ -101,21 +103,30 @@ fi
 
 echo "💿 Target disk: $TARGET_DISK"
 
-# Download dan extract langsung ke disk
 cd /tmp
 
-# Cek apakah image compressed atau tidak
-if rclone lsf gdrive:rdp-images/ 2>/dev/null | grep -q "^${IMAGE_NAME}.img.gz$"; then
-    echo "📥 Downloading ${IMAGE_NAME}.img.gz..."
-    rclone cat "gdrive:rdp-images/${IMAGE_NAME}.img.gz" | gunzip | dd of="$TARGET_DISK" bs=4M status=progress
-elif rclone lsf gdrive:rdp-images/ 2>/dev/null | grep -q "^${IMAGE_NAME}.img$"; then
-    echo "📥 Downloading ${IMAGE_NAME}.img..."
-    rclone cat "gdrive:rdp-images/${IMAGE_NAME}.img" | dd of="$TARGET_DISK" bs=4M status=progress
+# Download dan extract langsung ke disk
+if echo "$IMAGE_PATH" | grep -qi "\.img\.gz$"; then
+    echo "📥 Streaming $IMAGE_PATH (.img.gz)..."
+    rclone cat "gdrive:rdp-images/$IMAGE_PATH" | gunzip | dd of="$TARGET_DISK" bs=4M status=progress
+elif echo "$IMAGE_PATH" | grep -qi "\.img$"; then
+    echo "📥 Streaming $IMAGE_PATH (.img)..."
+    rclone cat "gdrive:rdp-images/$IMAGE_PATH" | dd of="$TARGET_DISK" bs=4M status=progress
 else
-    echo "❌ Image tidak ditemukan di GDrive: ${IMAGE_NAME}"
-    rclone lsf gdrive:rdp-images/ 2>/dev/null || echo "Folder rdp-images kosong"
+    echo "❌ Format image tidak didukung: $IMAGE_PATH"
     exit 1
 fi
+
+# Sync dan resize partition
+sync
+echo "🔧 Resizing partition..."
+growpart "$TARGET_DISK" 1 2>/dev/null || true
+
+# Cleanup rclone config (security)
+rm -rf ~/.config/rclone ~/.rclone.conf
+
+echo "DEPLOY_SUCCESS"
+DEPLOY_SCRIPT
 
 # Sync dan resize partition
 sync
