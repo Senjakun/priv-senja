@@ -286,6 +286,7 @@ def select_rdp_type(call):
 # ==================== PILIH WINDOWS ====================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("win_"))
 def select_windows(call):
+    """Setelah pilih Windows, langsung tampilkan list image dari GDrive"""
     if not is_allowed(call.from_user.id):
         bot.answer_callback_query(call.id, "⛔ Akses ditolak!")
         return
@@ -300,74 +301,27 @@ def select_windows(call):
     # Simpan pilihan OS user untuk dipakai saat /install
     USER_SELECTED_OS[call.from_user.id] = {"code": win_num, "name": win_name}
 
-    text = f"""✅ <b>Pilihan Anda:</b>
+    bot.answer_callback_query(call.id, f"✅ {win_name} - Loading images...")
 
-📦 <b>Tipe:</b> {type_name}
-🪟 <b>Windows:</b> {win_name} (<code>{win_num}</code>)
-
-<b>Pilih sumber image:</b>"""
-
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("☁️ Dari GDrive (Stok Image)", callback_data="src_gdrive"))
-    markup.add(types.InlineKeyboardButton("🌐 Online (Download Otomatis)", callback_data="src_online"))
-    markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="install_rdp"))
-
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
-    bot.answer_callback_query(call.id, f"✅ Dipilih: {win_name}")
-
-# ==================== PILIH SUMBER IMAGE ====================
-@bot.callback_query_handler(func=lambda call: call.data == "src_online")
-def select_source_online(call):
-    """User pilih install dari online (tanpa GDrive)"""
-    if not is_allowed(call.from_user.id):
-        bot.answer_callback_query(call.id, "⛔ Akses ditolak!")
-        return
-
-    saved = USER_SELECTED_OS.get(call.from_user.id)
-    rdp_type = USER_SELECTED_TYPE.get(call.from_user.id, "docker")
-    type_name = RDP_TYPES[rdp_type]["name"]
-    win_name = saved.get("name") if saved else "Windows"
-    win_code = saved.get("code") if saved else "10"
-
-    text = f"""✅ <b>Pilihan Anda:</b>
+    # Langsung tampilkan list image dari GDrive
+    rclone_conf = os.path.expanduser("~/.config/rclone/rclone.conf")
+    if not os.path.exists(rclone_conf):
+        text = f"""✅ <b>Pilihan Anda:</b>
 
 📦 <b>Tipe:</b> {type_name}
 🪟 <b>Windows:</b> {win_name}
-☁️ <b>Sumber:</b> Online (Download Otomatis)
 
-Sekarang kirim IP dan Password VPS dengan format:
-<code>/install IP PASSWORD</code>
-
-Contoh: <code>/install 167.71.123.45 password123</code>"""
-
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="install_rdp"))
-
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
-    bot.answer_callback_query(call.id, "✅ Sumber: Online")
-
-@bot.callback_query_handler(func=lambda call: call.data == "src_gdrive")
-def select_source_gdrive(call):
-    """User pilih install dari GDrive - tampilkan list image"""
-    if not is_allowed(call.from_user.id):
-        bot.answer_callback_query(call.id, "⛔ Akses ditolak!")
-        return
-
-    bot.answer_callback_query(call.id, "⏳ Mengambil daftar image...")
-
-    # Cek apakah rclone tersedia di bot server
-    rclone_conf = os.path.expanduser("~/.config/rclone/rclone.conf")
-    if not os.path.exists(rclone_conf):
-        bot.edit_message_text(
-            """❌ <b>GDrive belum dikonfigurasi!</b>
+❌ <b>GDrive belum dikonfigurasi!</b>
 
 Owner perlu setup GDrive dulu di menu:
-⚙️ Settings Owner → ☁️ Google Drive Manager""",
-            call.message.chat.id, call.message.message_id, parse_mode="HTML"
-        )
+⚙️ Settings Owner → ☁️ Google Drive Manager"""
+        
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="install_rdp"))
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
         return
 
-    def list_gdrive_images():
+    def list_and_show_images():
         try:
             # Auto-create folder rdp-images jika belum ada
             subprocess.run(["rclone", "mkdir", "gdrive:rdp-images"], capture_output=True, timeout=30)
@@ -378,50 +332,51 @@ Owner perlu setup GDrive dulu di menu:
                 capture_output=True, text=True, timeout=30
             )
 
-            if result.returncode != 0:
-                error_msg = result.stderr.strip()
-                if "directory not found" in error_msg.lower():
-                    bot.send_message(call.message.chat.id, """📋 <b>STOK IMAGE KOSONG</b>
-
-Folder rdp-images belum ada di GDrive.
-Owner perlu build & upload image dulu via Tumbal VPS.""", parse_mode="HTML")
-                else:
-                    bot.send_message(call.message.chat.id, f"❌ Error: {error_msg}")
-                return
-
-            output = result.stdout.strip()
             files = []
-
-            for line in output.split('\n'):
-                if line.strip():
-                    parts = line.split(';')
-                    if len(parts) >= 2:
-                        size = parts[0].strip()
-                        name = parts[1].strip()
-                        if name:
-                            files.append((name, size))
+            if result.returncode == 0:
+                output = result.stdout.strip()
+                for line in output.split('\n'):
+                    if line.strip():
+                        parts = line.split(';')
+                        if len(parts) >= 2:
+                            size = parts[0].strip()
+                            name = parts[1].strip()
+                            if name:
+                                # Cek golden image
+                                is_golden = name.startswith("golden-") or "golden" in name.lower()
+                                files.append((name, size, is_golden))
 
             if not files:
-                bot.send_message(call.message.chat.id, """📋 <b>STOK IMAGE KOSONG</b>
+                text = f"""✅ <b>Pilihan Anda:</b>
+
+📦 <b>Tipe:</b> {type_name}
+🪟 <b>Windows:</b> {win_name}
+
+📋 <b>STOK IMAGE KOSONG</b>
 
 Belum ada image di GDrive.
-Owner perlu build & upload image dulu via Tumbal VPS.""", parse_mode="HTML")
+Owner perlu upload image dulu via Tumbal VPS."""
+                
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="install_rdp"))
+                bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
                 return
 
-            saved = USER_SELECTED_OS.get(call.from_user.id)
-            rdp_type = USER_SELECTED_TYPE.get(call.from_user.id, "docker")
-            type_name = RDP_TYPES[rdp_type]["name"]
-            win_name = saved.get("name") if saved else "Windows"
+            # Pisahkan golden dan regular
+            golden_files = [(n, s) for n, s, g in files if g]
+            regular_files = [(n, s) for n, s, g in files if not g]
 
             files_text = ""
-            markup = types.InlineKeyboardMarkup()
-
-            for name, size in files[:10]:
-                files_text += f"📦 <code>{name}</code> ({size})\n"
-                markup.add(types.InlineKeyboardButton(
-                    f"📥 {name[:30]}{'...' if len(name) > 30 else ''}",
-                    callback_data=f"use_img:{name[:50]}"
-                ))
+            if golden_files:
+                files_text += "🏆 <b>Golden Images (CEPAT 1-2 menit):</b>\n"
+                for name, size in golden_files[:5]:
+                    files_text += f"  📦 <code>{name}</code> ({size})\n"
+                files_text += "\n"
+            
+            if regular_files:
+                files_text += "📁 <b>Regular Images:</b>\n"
+                for name, size in regular_files[:5]:
+                    files_text += f"  📦 <code>{name}</code> ({size})\n"
 
             text = f"""☁️ <b>PILIH IMAGE DARI GDRIVE</b>
 ━━━━━━━━━━━━━━━━━━
@@ -429,9 +384,26 @@ Owner perlu build & upload image dulu via Tumbal VPS.""", parse_mode="HTML")
 📦 <b>Tipe:</b> {type_name}
 🪟 <b>Windows:</b> {win_name}
 
-<b>Stok Image:</b>
 {files_text}
-Klik image untuk install:"""
+<b>Klik image untuk install:</b>"""
+
+            markup = types.InlineKeyboardMarkup()
+
+            # Golden images first (prioritas)
+            for name, size in golden_files[:5]:
+                short_name = name[:25] + "..." if len(name) > 25 else name
+                markup.add(types.InlineKeyboardButton(
+                    f"🏆 {short_name} ({size})",
+                    callback_data=f"use_img:{name[:50]}"
+                ))
+
+            # Regular images
+            for name, size in regular_files[:5]:
+                short_name = name[:25] + "..." if len(name) > 25 else name
+                markup.add(types.InlineKeyboardButton(
+                    f"📦 {short_name} ({size})",
+                    callback_data=f"use_img:{name[:50]}"
+                ))
 
             markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="install_rdp"))
 
@@ -440,7 +412,9 @@ Klik image untuk install:"""
         except Exception as e:
             bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
 
-    threading.Thread(target=list_gdrive_images, daemon=True).start()
+    threading.Thread(target=list_and_show_images, daemon=True).start()
+
+# Handler src_gdrive dihapus - sudah terintegrasi langsung di select_windows
 
 # ==================== PILIH IMAGE DARI GDRIVE ====================
 USER_SELECTED_IMAGE = {}
