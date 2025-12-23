@@ -1303,13 +1303,38 @@ echo "BUILD_COMPLETE"
             )
 
             if "BUILD_COMPLETE" in result.stdout:
-                bot.send_message(chat_id, f"""✅ <b>Build Selesai!</b>
+                # Cari nama file hasil build
+                list_result = subprocess.run(
+                    ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
+                     f"root@{ip}", "ls -t /root/rdp-images/ 2>/dev/null | head -1"],
+                    capture_output=True, text=True, timeout=30
+                )
+                latest_file = list_result.stdout.strip() if list_result.returncode == 0 else ""
+                
+                if latest_file:
+                    file_path = f"/root/rdp-images/{latest_file}"
+                    markup = types.InlineKeyboardMarkup()
+                    markup.add(types.InlineKeyboardButton(
+                        "📤 Upload ke GDrive", 
+                        callback_data=f"quick_upload:{file_path}"
+                    ))
+                    markup.add(types.InlineKeyboardButton("📋 List Files", callback_data="tumbal_list"))
+                    
+                    bot.send_message(chat_id, f"""✅ <b>Build Selesai!</b>
+
+🪟 <b>Windows:</b> {win_name}
+📍 <b>VPS:</b> {name}
+📁 <b>File:</b> <code>{file_path}</code>
+
+Klik tombol di bawah untuk upload ke Google Drive:""", parse_mode="HTML", reply_markup=markup)
+                else:
+                    bot.send_message(chat_id, f"""✅ <b>Build Selesai!</b>
 
 🪟 <b>Windows:</b> {win_name}
 📍 <b>VPS:</b> {name}
 📁 <b>Lokasi:</b> /root/rdp-images/
 
-Gunakan menu Google Drive untuk upload ke cloud.""", parse_mode="HTML")
+Gunakan <code>/listlocal</code> untuk lihat file, lalu <code>/upload [path] rdp-images</code>""", parse_mode="HTML")
             else:
                 bot.send_message(chat_id, f"""❌ <b>Build Gagal!</b>
 
@@ -1322,7 +1347,134 @@ Gunakan menu Google Drive untuk upload ke cloud.""", parse_mode="HTML")
 
     threading.Thread(target=do_build, daemon=True).start()
 
+# ==================== QUICK UPLOAD (dari tombol setelah build) ====================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("quick_upload:"))
+def quick_upload_handler(call):
+    if not is_owner(call.from_user.id):
+        bot.answer_callback_query(call.id, "⛔ Hanya untuk owner!")
+        return
+
+    file_path = call.data.split(":", 1)[1]
+    bot.answer_callback_query(call.id, "⏳ Memulai upload...")
+
+    tumbal = get_active_tumbal()
+    if not tumbal:
+        bot.send_message(call.message.chat.id, "❌ Tidak ada VPS aktif!")
+        return
+
+    def do_remote_upload():
+        try:
+            ip = tumbal["ip"]
+            password = tumbal["password"]
+            
+            # Cek file size dulu
+            size_result = subprocess.run(
+                ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
+                 f"root@{ip}", f"du -h {file_path} 2>/dev/null | cut -f1"],
+                capture_output=True, text=True, timeout=30
+            )
+            file_size = size_result.stdout.strip() or "?"
+            
+            bot.send_message(call.message.chat.id, f"""⏳ <b>Uploading ke GDrive...</b>
+
+📁 <b>File:</b> <code>{file_path}</code>
+📊 <b>Size:</b> {file_size}
+
+Ini bisa memakan waktu lama untuk file besar.""", parse_mode="HTML")
+
+            # Upload via rclone di VPS tumbal
+            upload_result = subprocess.run(
+                ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
+                 f"root@{ip}", f"rclone copy {file_path} gdrive:rdp-images/ -P 2>&1"],
+                capture_output=True, text=True, timeout=7200  # 2 jam timeout
+            )
+
+            if upload_result.returncode == 0:
+                filename = os.path.basename(file_path)
+                bot.send_message(call.message.chat.id, f"""✅ <b>Upload Berhasil!</b>
+
+📁 <b>File:</b> {filename}
+📂 <b>GDrive:</b> rdp-images/{filename}
+📊 <b>Size:</b> {file_size}""", parse_mode="HTML")
+            else:
+                bot.send_message(call.message.chat.id, f"""❌ <b>Upload Gagal!</b>
+
+<code>{upload_result.stderr[:500] if upload_result.stderr else upload_result.stdout[:500]}</code>
+
+Pastikan rclone sudah dikonfigurasi di VPS tumbal.""", parse_mode="HTML")
+
+        except subprocess.TimeoutExpired:
+            bot.send_message(call.message.chat.id, "⏰ Upload timeout (>2 jam)")
+        except Exception as e:
+            bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
+
+    threading.Thread(target=do_remote_upload, daemon=True).start()
+
 # ==================== LIST LOCAL IMAGES ====================
+@bot.message_handler(commands=['listlocal'])
+def list_local_cmd(message):
+    """Command /listlocal - List file di /root/rdp-images/ VPS tumbal"""
+    if not is_owner(message.from_user.id):
+        bot.reply_to(message, "⛔ Hanya owner!")
+        return
+
+    tumbal = get_active_tumbal()
+    if not tumbal:
+        bot.reply_to(message, "❌ Belum ada VPS tumbal aktif! Tambah dulu via /start → Settings Owner → Tumbal VPS")
+        return
+
+    bot.reply_to(message, f"⏳ Mengambil daftar file dari {tumbal['name']}...")
+
+    def list_images():
+        try:
+            ip = tumbal["ip"]
+            password = tumbal["password"]
+            name = tumbal["name"]
+
+            result = subprocess.run(
+                ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
+                 f"root@{ip}", "ls -lhS /root/rdp-images/ 2>/dev/null || echo 'EMPTY'"],
+                capture_output=True, text=True, timeout=30
+            )
+
+            if "EMPTY" in result.stdout or not result.stdout.strip():
+                text = f"""📋 <b>LOCAL IMAGES DI {name.upper()}</b>
+━━━━━━━━━━━━━━━━━━
+
+📍 IP: <code>{ip}</code>
+
+Folder kosong. Belum ada image yang dibuild."""
+            else:
+                # Parse dan format output
+                lines = result.stdout.strip().split('\n')
+                files_info = []
+                for line in lines[1:]:  # Skip header line
+                    parts = line.split()
+                    if len(parts) >= 9:
+                        size = parts[4]
+                        filename = parts[-1]
+                        files_info.append(f"• <code>{filename}</code> ({size})")
+                
+                text = f"""📋 <b>LOCAL IMAGES DI {name.upper()}</b>
+━━━━━━━━━━━━━━━━━━
+
+📍 IP: <code>{ip}</code>
+
+{chr(10).join(files_info) if files_info else result.stdout}
+
+<b>Upload:</b>
+<code>/upload /root/rdp-images/[nama_file] rdp-images</code>"""
+
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("🔄 Refresh", callback_data="tumbal_list"))
+
+            bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+
+        except Exception as e:
+            bot.send_message(message.chat.id, f"❌ Error: {str(e)}")
+
+    threading.Thread(target=list_images, daemon=True).start()
+
 @bot.callback_query_handler(func=lambda call: call.data == "tumbal_list")
 def tumbal_list_images(call):
     if not is_owner(call.from_user.id):
@@ -1344,7 +1496,7 @@ def tumbal_list_images(call):
 
             result = subprocess.run(
                 ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
-                 f"root@{ip}", "ls -lh /root/rdp-images/ 2>/dev/null || echo 'EMPTY'"],
+                 f"root@{ip}", "ls -lhS /root/rdp-images/ 2>/dev/null || echo 'EMPTY'"],
                 capture_output=True, text=True, timeout=30
             )
 
