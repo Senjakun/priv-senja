@@ -9,6 +9,13 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 
+# Colors (define early for use in functions)
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
 # Retry helper (handles apt locks / slow mirrors)
 run_with_retries() {
     local -r max_attempts="${1:-5}"; shift
@@ -68,12 +75,47 @@ apt_get() {
     apt-get "$@"
 }
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# Install Python packages dengan berbagai metode
+install_python_packages() {
+    echo -e "${BLUE}⏳ Menginstall Python packages...${NC}"
+    
+    local packages="pyTeleBot paramiko requests"
+    
+    # Method 1: python3 -m pip dengan --break-system-packages (Ubuntu 23+)
+    if python3 -m pip install --no-cache-dir --break-system-packages $packages 2>/dev/null; then
+        return 0
+    fi
+    
+    # Method 2: python3 -m pip tanpa --break-system-packages (Ubuntu 22 dan sebelumnya)
+    if python3 -m pip install --no-cache-dir $packages 2>/dev/null; then
+        return 0
+    fi
+    
+    # Method 3: pip3 langsung dengan --break-system-packages
+    if pip3 install --break-system-packages $packages 2>/dev/null; then
+        return 0
+    fi
+    
+    # Method 4: pip3 langsung
+    if pip3 install $packages 2>/dev/null; then
+        return 0
+    fi
+    
+    # Method 5: Install pip dulu kalau belum ada
+    echo -e "${YELLOW}⚠️  Mencoba install pip terlebih dahulu...${NC}"
+    apt_get install -y python3-pip 2>/dev/null || true
+    
+    if pip3 install $packages 2>/dev/null; then
+        return 0
+    fi
+    
+    return 1
+}
+
+# Verify Python packages
+verify_python_packages() {
+    python3 -c "import telebot, paramiko, requests" 2>/dev/null
+}
 
 echo -e "${BLUE}"
 echo "╔═══════════════════════════════════════╗"
@@ -100,40 +142,44 @@ read -p "📂 GitHub Repo URL (kosongkan jika lokal): " GITHUB_REPO
 INSTALL_DIR="/root/rdp-bot"
 
 echo ""
-echo -e "${BLUE}⏳ Menginstall dependencies...${NC}"
+echo -e "${BLUE}⏳ Menginstall system dependencies...${NC}"
 
-# Update & install dependencies (show output so it doesn't look stuck)
+# Update & install dependencies
 run_with_retries 5 apt_get update
 run_with_retries 5 apt_get install -y \
   -o Dpkg::Options::=--force-confdef \
   -o Dpkg::Options::=--force-confold \
-  python3 python3-pip git sshpass curl
+  python3 python3-pip git sshpass curl psmisc
 
-# Install Python packages using python3 -m pip (more reliable)
-echo -e "${BLUE}⏳ Menginstall Python packages...${NC}"
-PIP_DISABLE_PIP_VERSION_CHECK=1 run_with_retries 3 python3 -m pip install --no-cache-dir --break-system-packages pyTeleBot paramiko requests 2>/dev/null || \
-PIP_DISABLE_PIP_VERSION_CHECK=1 run_with_retries 3 python3 -m pip install --no-cache-dir pyTeleBot paramiko requests
+# Install Python packages dengan retry
+attempts=0
+max_attempts=3
+while [ $attempts -lt $max_attempts ]; do
+    if install_python_packages; then
+        break
+    fi
+    attempts=$((attempts + 1))
+    echo -e "${YELLOW}⚠️  Retry install Python packages (${attempts}/${max_attempts})...${NC}"
+    sleep 5
+done
 
-# Verify Python packages installed correctly
+# Verify packages installed
 echo -e "${BLUE}⏳ Verifikasi Python packages...${NC}"
-if python3 -c "import telebot, paramiko, requests" 2>/dev/null; then
-    echo -e "${GREEN}✅ Python packages terinstall${NC}"
+if verify_python_packages; then
+    echo -e "${GREEN}✅ Semua Python packages terinstall${NC}"
 else
-    echo -e "${YELLOW}⚠️  Mencoba install ulang dengan pip3...${NC}"
-    pip3 install --break-system-packages pyTeleBot paramiko requests 2>/dev/null || \
-    pip3 install pyTeleBot paramiko requests
+    echo -e "${RED}❌ Gagal install Python packages!${NC}"
+    echo -e "${YELLOW}Mencoba install manual...${NC}"
+    pip3 install pyTeleBot paramiko requests || true
     
-    # Final check
-    if python3 -c "import telebot, paramiko, requests" 2>/dev/null; then
-        echo -e "${GREEN}✅ Python packages terinstall${NC}"
-    else
-        echo -e "${RED}❌ Gagal install Python packages!${NC}"
-        echo "Coba manual: pip3 install pyTeleBot paramiko requests"
+    if ! verify_python_packages; then
+        echo -e "${RED}❌ Python packages masih gagal. Coba manual:${NC}"
+        echo "pip3 install pyTeleBot paramiko requests"
         exit 1
     fi
 fi
 
-echo -e "${GREEN}✅ Semua dependencies terinstall${NC}"
+echo -e "${GREEN}✅ Dependencies terinstall${NC}"
 
 # Clone or copy repo
 if [ -n "$GITHUB_REPO" ]; then
@@ -143,11 +189,18 @@ if [ -n "$GITHUB_REPO" ]; then
 else
     echo -e "${BLUE}⏳ Menggunakan file lokal...${NC}"
     mkdir -p $INSTALL_DIR
-    # Copy current directory files if exists
-    if [ -f "rdp_bot.py" ]; then
+    
+    # Find and copy bot files
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    
+    if [ -f "$SCRIPT_DIR/rdp_bot.py" ]; then
+        cp -r "$SCRIPT_DIR"/* $INSTALL_DIR/
+    elif [ -f "rdp_bot.py" ]; then
         cp -r ./* $INSTALL_DIR/
     elif [ -f "telegram_bot/rdp_bot.py" ]; then
         cp -r telegram_bot/* $INSTALL_DIR/
+    elif [ -f "../rdp_bot.py" ]; then
+        cp -r ../* $INSTALL_DIR/
     fi
 fi
 
@@ -164,8 +217,27 @@ if [ -f "$BOT_FILE" ]; then
     echo -e "${GREEN}✅ Konfigurasi diupdate${NC}"
 else
     echo -e "${RED}❌ File rdp_bot.py tidak ditemukan!${NC}"
+    echo -e "${YELLOW}Files in $INSTALL_DIR:${NC}"
+    ls -la $INSTALL_DIR/
     exit 1
 fi
+
+# Create startup script that auto-installs deps if missing
+echo -e "${BLUE}⏳ Membuat startup script...${NC}"
+cat > $INSTALL_DIR/start_bot.sh << 'STARTSCRIPT'
+#!/bin/bash
+# Auto-install dependencies if missing
+if ! python3 -c "import telebot, paramiko, requests" 2>/dev/null; then
+    echo "Installing missing Python packages..."
+    pip3 install --break-system-packages pyTeleBot paramiko requests 2>/dev/null || \
+    pip3 install pyTeleBot paramiko requests 2>/dev/null || \
+    python3 -m pip install pyTeleBot paramiko requests
+fi
+
+# Run bot
+exec python3 rdp_bot.py
+STARTSCRIPT
+chmod +x $INSTALL_DIR/start_bot.sh
 
 # Create systemd service
 echo -e "${BLUE}⏳ Membuat systemd service...${NC}"
@@ -178,8 +250,8 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=$(dirname $BOT_FILE)
-ExecStart=/usr/bin/python3 $(basename $BOT_FILE)
+WorkingDirectory=$INSTALL_DIR
+ExecStart=/bin/bash $INSTALL_DIR/start_bot.sh
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
@@ -187,6 +259,9 @@ Environment=PYTHONUNBUFFERED=1
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# Stop existing service if running
+systemctl stop rdpbot 2>/dev/null || true
 
 # Enable and start service
 systemctl daemon-reload
@@ -208,13 +283,15 @@ echo "   • Restart : systemctl restart rdpbot"
 echo "   • Logs    : journalctl -u rdpbot -f"
 echo ""
 echo -e "${BLUE}🔄 Update bot dari GitHub:${NC}"
-echo "   cd $(dirname $BOT_FILE) && git pull && systemctl restart rdpbot"
+echo "   cd $INSTALL_DIR && git pull && systemctl restart rdpbot"
 echo ""
 
 # Check if running
-sleep 2
+sleep 3
 if systemctl is-active --quiet rdpbot; then
     echo -e "${GREEN}🤖 Bot sedang berjalan! Coba kirim /start di Telegram${NC}"
 else
-    echo -e "${RED}⚠️ Bot gagal start. Cek log: journalctl -u rdpbot -f${NC}"
+    echo -e "${YELLOW}⏳ Bot sedang starting... Cek status:${NC}"
+    echo "   systemctl status rdpbot"
+    echo "   journalctl -u rdpbot -f"
 fi
