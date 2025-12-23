@@ -725,6 +725,7 @@ Bisa pakai banyak VPS untuk paralel build.
     markup.add(types.InlineKeyboardButton("➕ Tambah Tumbal VPS", callback_data="tumbal_add"))
     markup.add(types.InlineKeyboardButton("📋 List & Pilih VPS", callback_data="tumbal_select"))
     markup.add(types.InlineKeyboardButton("🔌 Test Koneksi", callback_data="tumbal_test"))
+    markup.add(types.InlineKeyboardButton("📟 Run Command", callback_data="tumbal_run"))
     markup.add(types.InlineKeyboardButton("🏗 Build Image", callback_data="tumbal_build"))
     markup.add(types.InlineKeyboardButton("📋 List Local Images", callback_data="tumbal_list"))
     markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="owner_settings"))
@@ -1409,6 +1410,189 @@ Pastikan rclone sudah dikonfigurasi di VPS tumbal.""", parse_mode="HTML")
             bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
 
     threading.Thread(target=do_remote_upload, daemon=True).start()
+
+# ==================== RUN COMMAND ON TUMBAL VPS ====================
+@bot.message_handler(commands=['run'])
+def run_cmd(message):
+    """Command /run - Jalankan perintah di VPS tumbal"""
+    if not is_owner(message.from_user.id):
+        bot.reply_to(message, "⛔ Hanya owner!")
+        return
+
+    tumbal = get_active_tumbal()
+    if not tumbal:
+        bot.reply_to(message, "❌ Belum ada VPS tumbal aktif! Tambah dulu via /start → Settings Owner → Tumbal VPS")
+        return
+
+    try:
+        # Get command after /run
+        cmd_text = message.text.split(maxsplit=1)
+        if len(cmd_text) < 2:
+            bot.reply_to(message, """📟 <b>RUN COMMAND</b>
+
+<b>Format:</b> <code>/run [perintah]</code>
+
+<b>Contoh:</b>
+<code>/run ls -la /root</code>
+<code>/run df -h</code>
+<code>/run free -h</code>
+<code>/run ls -lh /root/rdp-images/</code>
+<code>/run apt update</code>
+<code>/run cat /etc/os-release</code>
+
+⚠️ Hati-hati dengan perintah berbahaya!""", parse_mode="HTML")
+            return
+
+        command = cmd_text[1]
+        ip = tumbal["ip"]
+        password = tumbal["password"]
+        name = tumbal["name"]
+
+        bot.reply_to(message, f"⏳ Menjalankan di <b>{name}</b>...\n<code>{command}</code>", parse_mode="HTML")
+
+        def execute_cmd():
+            try:
+                result = subprocess.run(
+                    ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
+                     "-o", "ConnectTimeout=15", f"root@{ip}", command],
+                    capture_output=True, text=True, timeout=120  # 2 menit timeout
+                )
+
+                output = result.stdout.strip() if result.stdout else ""
+                error = result.stderr.strip() if result.stderr else ""
+                
+                # Combine output
+                full_output = ""
+                if output:
+                    full_output += output
+                if error:
+                    if full_output:
+                        full_output += "\n\n⚠️ STDERR:\n" + error
+                    else:
+                        full_output = error
+
+                if not full_output:
+                    full_output = "(tidak ada output)"
+
+                # Truncate if too long
+                if len(full_output) > 3500:
+                    full_output = full_output[:3500] + "\n\n... (output terpotong)"
+
+                status = "✅" if result.returncode == 0 else "⚠️"
+                
+                text = f"""{status} <b>OUTPUT dari {name}</b>
+━━━━━━━━━━━━━━━━━━
+📍 IP: <code>{ip}</code>
+💻 CMD: <code>{command}</code>
+📊 Exit: {result.returncode}
+━━━━━━━━━━━━━━━━━━
+
+<code>{full_output}</code>"""
+
+                bot.send_message(message.chat.id, text, parse_mode="HTML")
+
+            except subprocess.TimeoutExpired:
+                bot.send_message(message.chat.id, f"⏰ Timeout! Perintah memakan waktu >2 menit")
+            except Exception as e:
+                bot.send_message(message.chat.id, f"❌ Error: {str(e)}")
+
+        threading.Thread(target=execute_cmd, daemon=True).start()
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error: {str(e)}")
+
+@bot.callback_query_handler(func=lambda call: call.data == "tumbal_run")
+def tumbal_run_menu(call):
+    if not is_owner(call.from_user.id):
+        bot.answer_callback_query(call.id, "⛔ Hanya untuk owner!")
+        return
+
+    tumbal = get_active_tumbal()
+    if not tumbal:
+        bot.answer_callback_query(call.id, "❌ Belum ada VPS aktif!")
+        return
+
+    bot.answer_callback_query(call.id)
+    
+    text = f"""📟 <b>RUN COMMAND - {tumbal['name']}</b>
+━━━━━━━━━━━━━━━━━━
+
+📍 IP: <code>{tumbal['ip']}</code>
+
+Gunakan command:
+<code>/run [perintah]</code>
+
+<b>Quick Commands:</b>"""
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📊 Disk Usage", callback_data="qcmd_df"))
+    markup.add(types.InlineKeyboardButton("💾 Memory", callback_data="qcmd_free"))
+    markup.add(types.InlineKeyboardButton("📁 List /root", callback_data="qcmd_ls"))
+    markup.add(types.InlineKeyboardButton("🖼 List Images", callback_data="qcmd_images"))
+    markup.add(types.InlineKeyboardButton("🔄 Uptime", callback_data="qcmd_uptime"))
+    markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="tumbal_menu"))
+
+    bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("qcmd_"))
+def quick_cmd(call):
+    if not is_owner(call.from_user.id):
+        bot.answer_callback_query(call.id, "⛔ Hanya untuk owner!")
+        return
+
+    tumbal = get_active_tumbal()
+    if not tumbal:
+        bot.answer_callback_query(call.id, "❌ Belum ada VPS aktif!")
+        return
+
+    cmd_map = {
+        "qcmd_df": "df -h",
+        "qcmd_free": "free -h",
+        "qcmd_ls": "ls -la /root",
+        "qcmd_images": "ls -lhS /root/rdp-images/ 2>/dev/null || echo 'Folder tidak ada'",
+        "qcmd_uptime": "uptime && cat /etc/os-release | head -5"
+    }
+
+    cmd = cmd_map.get(call.data, "echo 'Unknown command'")
+    ip = tumbal["ip"]
+    password = tumbal["password"]
+    name = tumbal["name"]
+
+    bot.answer_callback_query(call.id, f"⏳ Running: {cmd[:30]}...")
+
+    def execute_cmd():
+        try:
+            result = subprocess.run(
+                ["sshpass", "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
+                 "-o", "ConnectTimeout=15", f"root@{ip}", cmd],
+                capture_output=True, text=True, timeout=60
+            )
+
+            output = result.stdout.strip() if result.stdout else result.stderr.strip()
+            if not output:
+                output = "(tidak ada output)"
+
+            if len(output) > 3000:
+                output = output[:3000] + "\n... (terpotong)"
+
+            status = "✅" if result.returncode == 0 else "⚠️"
+            
+            text = f"""{status} <b>OUTPUT - {name}</b>
+━━━━━━━━━━━━━━━━━━
+💻 <code>{cmd}</code>
+━━━━━━━━━━━━━━━━━━
+
+<code>{output}</code>"""
+
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="tumbal_run"))
+
+            bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+
+        except Exception as e:
+            bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
+
+    threading.Thread(target=execute_cmd, daemon=True).start()
 
 # ==================== LIST LOCAL IMAGES ====================
 @bot.message_handler(commands=['listlocal'])
