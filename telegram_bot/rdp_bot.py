@@ -1626,8 +1626,42 @@ Jalankan dulu:
             req = urllib.request.Request(device_url, data=payload, method="POST")
             req.add_header("Content-Type", "application/x-www-form-urlencoded")
 
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                dc = json.loads(resp.read().decode())
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    dc = json.loads(resp.read().decode())
+            except Exception as e:
+                # Biasanya HTTP 401/400 terjadi karena OAuth Client type tidak mendukung Device Code Flow
+                try:
+                    import urllib.error
+
+                    if isinstance(e, urllib.error.HTTPError):
+                        body = e.read().decode(errors="ignore")
+                        bot.send_message(
+                            message.chat.id,
+                            f"""❌ <b>Authorize ditolak Google</b>
+
+HTTP: <code>{e.code}</code>
+
+Ini biasanya karena <b>OAuth Client ID</b> kamu tipe <b>Web application</b>.
+
+✅ Solusi:
+1) Di Google Cloud → Credentials
+2) Create OAuth Client ID → pilih <b>TVs and Limited Input devices</b>
+3) Ambil client_id + client_secret baru
+4) Jalankan ulang:
+<code>/configgdrive CLIENT_ID CLIENT_SECRET</code>
+5) Lalu:
+<code>/authgdrive</code>
+
+Detail: <code>{body[:200]}</code>""",
+                            parse_mode="HTML",
+                        )
+                        return
+                except Exception:
+                    pass
+
+                bot.send_message(message.chat.id, f"❌ Error: {str(e)}")
+                return
 
             if not dc.get("device_code"):
                 bot.send_message(message.chat.id, f"❌ Gagal memulai authorize: {dc}")
@@ -1703,8 +1737,8 @@ Jalankan dulu:
                         message.chat.id,
                         f"""❌ Authorize error: <code>{err}</code>
 
-Biasanya karena OAuth Client kamu bukan <b>Desktop app</b>.
-Buat ulang OAuth Client (Desktop app) lalu jalankan /configgdrive lagi.""",
+Biasanya karena OAuth Client kamu bukan <b>TVs and Limited Input devices</b>.
+Buat ulang OAuth Client (TV/limited input) lalu jalankan /configgdrive lagi.""",
                         parse_mode="HTML",
                     )
                     return
