@@ -1630,32 +1630,38 @@ Jalankan dulu:
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     dc = json.loads(resp.read().decode())
             except Exception as e:
-                # Biasanya HTTP 401/400 terjadi karena OAuth Client type tidak mendukung Device Code Flow
+                # HTTP 400/401 bisa karena: 1) OAuth type salah, 2) App masih Testing mode
                 try:
                     import urllib.error
 
                     if isinstance(e, urllib.error.HTTPError):
                         body = e.read().decode(errors="ignore")
-                        bot.send_message(
-                            message.chat.id,
-                            f"""❌ <b>Authorize ditolak Google</b>
+                        
+                        error_msg = f"""❌ <b>Authorize ditolak Google</b>
 
 HTTP: <code>{e.code}</code>
 
-Ini biasanya karena <b>OAuth Client ID</b> kamu tipe <b>Web application</b>.
+<b>Kemungkinan penyebab:</b>
 
-✅ Solusi:
-1) Di Google Cloud → Credentials
-2) Create OAuth Client ID → pilih <b>TVs and Limited Input devices</b>
-3) Ambil client_id + client_secret baru
-4) Jalankan ulang:
-<code>/configgdrive CLIENT_ID CLIENT_SECRET</code>
-5) Lalu:
-<code>/authgdrive</code>
+<b>1️⃣ Aplikasi masih mode Testing</b>
+   → OAuth consent screen → <b>Test users</b> → Add email kamu
+   → Atau klik <b>Publish App</b> untuk production
 
-Detail: <code>{body[:200]}</code>""",
-                            parse_mode="HTML",
-                        )
+<b>2️⃣ OAuth Client type salah</b>
+   → Harus tipe <b>TVs and Limited Input devices</b>
+   → Bukan "Web application" atau "Desktop"
+
+<b>3️⃣ Scope belum diaktifkan</b>
+   → OAuth consent screen → Scopes
+   → Tambahkan: <code>../auth/drive.file</code>
+
+Setelah fix, jalankan ulang:
+<code>/authgdrive</code>"""
+                        
+                        if body:
+                            error_msg += f"\n\nDetail: <code>{body[:150]}</code>"
+                        
+                        bot.send_message(message.chat.id, error_msg, parse_mode="HTML")
                         return
                 except Exception:
                     pass
