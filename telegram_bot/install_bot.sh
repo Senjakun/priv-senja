@@ -206,17 +206,20 @@ else
     fi
 fi
 
-# Update config in bot file
+# Update config: simpan ke .env (tidak hilang saat update)
 BOT_FILE="$INSTALL_DIR/rdp_bot.py"
 if [ ! -f "$BOT_FILE" ] && [ -f "$INSTALL_DIR/telegram_bot/rdp_bot.py" ]; then
     BOT_FILE="$INSTALL_DIR/telegram_bot/rdp_bot.py"
 fi
 
 if [ -f "$BOT_FILE" ]; then
-    echo -e "${BLUE}⏳ Mengupdate konfigurasi...${NC}"
-    sed -i "s/BOT_TOKEN = .*/BOT_TOKEN = \"$BOT_TOKEN\"/" $BOT_FILE
-    sed -i "s/OWNER_ID = .*/OWNER_ID = $OWNER_ID/" $BOT_FILE
-    echo -e "${GREEN}✅ Konfigurasi diupdate${NC}"
+    echo -e "${BLUE}⏳ Menyimpan konfigurasi ke .env...${NC}"
+    cat > "$INSTALL_DIR/.env" <<EOF
+BOT_TOKEN=$BOT_TOKEN
+OWNER_ID=$OWNER_ID
+EOF
+    chmod 600 "$INSTALL_DIR/.env"
+    echo -e "${GREEN}✅ Konfigurasi tersimpan: $INSTALL_DIR/.env${NC}"
 else
     echo -e "${RED}❌ File rdp_bot.py tidak ditemukan!${NC}"
     echo -e "${YELLOW}Files in $INSTALL_DIR:${NC}"
@@ -231,6 +234,20 @@ cat > $INSTALL_DIR/start_bot.sh << 'STARTSCRIPT'
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Load env (token + owner) - persistent across updates
+if [ -f "./.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "./.env"
+  set +a
+fi
+
+# Validate token early to avoid systemd restart loop
+if [ -z "${BOT_TOKEN:-}" ] || [ "${BOT_TOKEN:-}" = "YOUR_BOT_TOKEN_HERE" ] || [[ "${BOT_TOKEN:-}" != *:* ]]; then
+  echo "❌ BOT_TOKEN tidak valid. Isi BOT_TOKEN di /root/rdp-bot/.env (format harus ada ':')" >&2
+  exit 1
+fi
+
 # Auto-detect bot path
 BOT_FILE=""
 if [ -f "./rdp_bot.py" ]; then
@@ -240,12 +257,6 @@ elif [ -f "./telegram_bot/rdp_bot.py" ]; then
 else
   echo "❌ rdp_bot.py tidak ditemukan di $(pwd)" >&2
   ls -la >&2
-  exit 1
-fi
-
-# Quick sanity check for token placeholder (prevents silent restart loop)
-if grep -q 'BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"' "$BOT_FILE"; then
-  echo "❌ BOT_TOKEN masih placeholder. Update BOT_TOKEN dulu (atau jalankan installer lagi)." >&2
   exit 1
 fi
 
@@ -272,6 +283,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=$INSTALL_DIR
+EnvironmentFile=$INSTALL_DIR/.env
 ExecStart=/bin/bash $INSTALL_DIR/start_bot.sh
 Restart=always
 RestartSec=10
