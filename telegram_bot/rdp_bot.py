@@ -18,8 +18,18 @@ import subprocess
 import threading
 
 # ==================== KONFIGURASI ====================
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Ganti di VPS, jangan di sini!
-OWNER_ID = 123456789  # Ganti dengan Telegram ID kamu
+# Disarankan set via environment variables (lebih aman dan tidak hilang saat update):
+#   BOT_TOKEN="123456:ABCDEF"  (harus ada tanda ':')
+#   OWNER_ID="123456789"
+BOT_TOKEN = (os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN_HERE").strip()
+try:
+    OWNER_ID = int(os.getenv("OWNER_ID") or "123456789")
+except ValueError:
+    raise SystemExit("OWNER_ID harus angka")
+
+if ":" not in BOT_TOKEN:
+    raise SystemExit("BOT_TOKEN tidak valid (Token must contain a colon). Set BOT_TOKEN yang benar.")
+
 
 # File untuk menyimpan data
 DATA_FILE = "bot_data.json"
@@ -435,27 +445,32 @@ def set_bot_token(message):
         return
 
     try:
-        new_token = message.text.split(maxsplit=1)[1]
+        new_token = message.text.split(maxsplit=1)[1].strip()
+        if ":" not in new_token:
+            bot.reply_to(message, "❌ Token tidak valid (harus ada tanda ':'). Contoh: /settoken 123456:ABC-xyz")
+            return
 
-        # Update di file rdp_bot.py
-        bot_file = os.path.abspath(__file__)
-        with open(bot_file, 'r') as f:
-            content = f.read()
+        # Simpan ke .env di folder bot (agar tidak hilang saat git pull / update)
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        owner_env = os.getenv("OWNER_ID") or str(OWNER_ID)
+        with open(env_path, "w") as f:
+            f.write(f"BOT_TOKEN={new_token}\n")
+            f.write(f"OWNER_ID={owner_env}\n")
 
-        import re
-        content = re.sub(r'BOT_TOKEN = ".*?"', f'BOT_TOKEN = "{new_token}"', content)
-
-        with open(bot_file, 'w') as f:
-            f.write(content)
-
-        bot.reply_to(message, f"""✅ <b>Bot Token berhasil diubah!</b>
+        bot.reply_to(
+            message,
+            f"""✅ <b>BOT_TOKEN tersimpan!</b>
 
 🔑 Token baru: <code>{new_token[:10]}...{new_token[-5:]}</code>
+📄 File: <code>{env_path}</code>
 
 ⚠️ <b>PENTING:</b> Restart bot untuk menerapkan perubahan!
-<code>systemctl restart rdpbot</code>""", parse_mode="HTML")
+<code>systemctl restart rdpbot</code>""",
+            parse_mode="HTML",
+        )
     except IndexError:
         bot.reply_to(message, "❌ Format: /settoken [token_baru]\nContoh: /settoken 123456:ABC-xyz")
+
 
 # ==================== SET OWNER ID ====================
 @bot.message_handler(commands=['setownerid'])
@@ -467,30 +482,32 @@ def set_owner_id(message):
     try:
         new_owner = int(message.text.split()[1])
 
-        # Update di file rdp_bot.py
-        bot_file = os.path.abspath(__file__)
-        with open(bot_file, 'r') as f:
-            content = f.read()
-
-        import re
-        content = re.sub(r'OWNER_ID = \d+', f'OWNER_ID = {new_owner}', content)
-
-        with open(bot_file, 'w') as f:
-            f.write(content)
-
-        # Tambahkan owner baru ke allowed_users jika belum ada
+        # Update allowed_users
         if new_owner not in data["allowed_users"]:
             data["allowed_users"].append(new_owner)
             save_data(data)
 
-        bot.reply_to(message, f"""✅ <b>Owner ID berhasil diubah!</b>
+        # Simpan ke .env agar konsisten
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        token_env = os.getenv("BOT_TOKEN") or BOT_TOKEN
+        with open(env_path, "w") as f:
+            f.write(f"BOT_TOKEN={token_env}\n")
+            f.write(f"OWNER_ID={new_owner}\n")
+
+        bot.reply_to(
+            message,
+            f"""✅ <b>OWNER_ID tersimpan!</b>
 
 👤 Owner baru: <code>{new_owner}</code>
+📄 File: <code>{env_path}</code>
 
 ⚠️ <b>PENTING:</b> Restart bot untuk menerapkan perubahan!
-<code>systemctl restart rdpbot</code>""", parse_mode="HTML")
+<code>systemctl restart rdpbot</code>""",
+            parse_mode="HTML",
+        )
     except (IndexError, ValueError):
         bot.reply_to(message, "❌ Format: /setownerid [telegram_id]\nContoh: /setownerid 123456789")
+
 
 # ==================== LIST USER ====================
 @bot.message_handler(commands=['listuser'])
