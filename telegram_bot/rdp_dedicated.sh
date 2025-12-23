@@ -1,13 +1,14 @@
 #!/bin/bash
 
-# Dedicated RDP Installer - Optimized for 2GB RAM
-# Usage: bash rdp_dedicated.sh [IP] [PASSWORD] [WIN_CODE] [CHAT_ID] [BOT_TOKEN]
+# Dedicated RDP Installer - Download from GDrive
+# Usage: bash rdp_dedicated.sh [IP] [PASSWORD] [WIN_CODE] [CHAT_ID] [BOT_TOKEN] [GDRIVE_IMAGE]
 
 IP=$1
 PASSWORD=$2
 WIN_CODE=$3
 CHAT_ID=$4
 BOT_TOKEN=$5
+GDRIVE_IMAGE=$6  # Nama file image di GDrive (optional)
 
 # Map WIN_CODE to name
 case $WIN_CODE in
@@ -47,6 +48,9 @@ echo "================================================"
 echo "🖥 Dedicated RDP Installer"
 echo "📍 IP: $IP"
 echo "🪟 Windows: $WIN_NAME ($WIN_CODE)"
+if [ -n "$GDRIVE_IMAGE" ]; then
+    echo "☁️ GDrive Image: $GDRIVE_IMAGE"
+fi
 echo "================================================"
 
 # Install sshpass
@@ -80,8 +84,28 @@ send_telegram "🔌 <b>VPS Terhubung</b>
 ⏳ Proses instalasi sedang berjalan...
 Mohon tunggu 15-30 menit."
 
+# Copy rclone config dari bot server ke VPS user (jika ada)
+RCLONE_CONF="$HOME/.config/rclone/rclone.conf"
+if [ -f "$RCLONE_CONF" ] && [ -n "$GDRIVE_IMAGE" ]; then
+    echo "📤 Syncing rclone config ke VPS user..."
+    
+    # Install rclone di VPS user
+    sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no root@"$IP" << 'RCLONE_INSTALL'
+if ! command -v rclone &> /dev/null; then
+    apt-get update -qq
+    apt-get install -y rclone > /dev/null 2>&1 || curl -s https://rclone.org/install.sh | bash > /dev/null 2>&1
+fi
+mkdir -p ~/.config/rclone
+RCLONE_INSTALL
+    
+    # Copy rclone.conf
+    sshpass -p "$PASSWORD" scp -o StrictHostKeyChecking=no "$RCLONE_CONF" root@"$IP":~/.config/rclone/rclone.conf
+    
+    echo "✅ Rclone config synced"
+fi
+
 # Jalankan instalasi
-sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=60 -o ServerAliveCountMax=30 root@"$IP" "WIN_CODE='$WIN_CODE' bash -s" << 'ENDSSH'
+sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=60 -o ServerAliveCountMax=30 root@"$IP" "WIN_CODE='$WIN_CODE' GDRIVE_IMAGE='$GDRIVE_IMAGE' bash -s" << 'ENDSSH'
 set -e
 
 echo "📦 Update sistem..."
@@ -106,10 +130,30 @@ if [ "$DISK_GB" -lt 20 ]; then
     exit 3
 fi
 
+# Download image dari GDrive jika ada
+if [ -n "$GDRIVE_IMAGE" ]; then
+    echo "☁️ Downloading image dari GDrive..."
+    mkdir -p /root/rdp-images
+    
+    if command -v rclone &> /dev/null && rclone listremotes | grep -q "gdrive:"; then
+        rclone copy "gdrive:rdp-images/$GDRIVE_IMAGE" /root/rdp-images/ -P
+        
+        if [ -f "/root/rdp-images/$GDRIVE_IMAGE" ]; then
+            echo "✅ Image downloaded: $GDRIVE_IMAGE"
+            # Install menggunakan image yang didownload
+            # TODO: Tambahkan logic install dari local image
+        else
+            echo "❌ Gagal download image dari GDrive"
+        fi
+    else
+        echo "⚠️ Rclone/GDrive tidak tersedia, menggunakan installer online..."
+    fi
+fi
+
 echo "📥 Downloading RDP installer..."
 cd /tmp
 
-# Download installer (gunakan install.sh yang benar)
+# Download installer
 wget -q https://raw.githubusercontent.com/Bintang73/auto-install-rdp/main/install.sh -O install.sh
 chmod +x install.sh
 
