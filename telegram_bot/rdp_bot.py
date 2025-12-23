@@ -3269,26 +3269,184 @@ def gdrive_list_cmd(message):
 # ==================== GDRIVE DELETE ====================
 @bot.callback_query_handler(func=lambda call: call.data == "gdrive_delete")
 def gdrive_delete_menu(call):
+    """Tampilkan daftar image di GDrive untuk dihapus"""
     if not is_owner(call.from_user.id):
         bot.answer_callback_query(call.id, "⛔ Hanya untuk owner!")
         return
 
-    text = """🗑 <b>DELETE FILE DI GOOGLE DRIVE</b>
+    bot.answer_callback_query(call.id, "⏳ Mengambil daftar image...")
+
+    # Cek rclone config
+    rclone_conf = os.path.expanduser("~/.config/rclone/rclone.conf")
+    if not os.path.exists(rclone_conf):
+        bot.edit_message_text(
+            """❌ <b>GDrive belum dikonfigurasi!</b>
+
+Setup dulu di menu:
+⚙️ Settings Owner → ☁️ Google Drive Manager → Setup Rclone""",
+            call.message.chat.id, call.message.message_id, parse_mode="HTML"
+        )
+        return
+
+    def list_for_delete():
+        try:
+            # List images dari GDrive
+            result = subprocess.run(
+                ["rclone", "lsf", "gdrive:rdp-images/", "--format", "ps"],
+                capture_output=True, text=True, timeout=30
+            )
+
+            if result.returncode != 0:
+                bot.send_message(call.message.chat.id, f"❌ Error: {result.stderr[:300]}")
+                return
+
+            output = result.stdout.strip()
+            files = []
+
+            for line in output.split('\n'):
+                if line.strip():
+                    parts = line.split(';')
+                    if len(parts) >= 2:
+                        size = parts[0].strip()
+                        name = parts[1].strip()
+                        if name:
+                            # Tandai golden image vs regular
+                            is_golden = name.startswith("golden-") or "golden" in name.lower()
+                            files.append((name, size, is_golden))
+
+            if not files:
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="gdrive_menu"))
+                bot.send_message(call.message.chat.id, """📋 <b>TIDAK ADA IMAGE</b>
+
+Folder rdp-images/ kosong.""", parse_mode="HTML", reply_markup=markup)
+                return
+
+            # Pisahkan golden dan regular
+            golden_files = [(n, s) for n, s, g in files if g]
+            regular_files = [(n, s) for n, s, g in files if not g]
+
+            text = """🗑 <b>HAPUS IMAGE DARI GDRIVE</b>
 ━━━━━━━━━━━━━━━━━━
 
-Gunakan command:
-<code>/deletegdrive [nama_file]</code>
+"""
+            if golden_files:
+                text += "🏆 <b>Golden Images:</b>\n"
+                for name, size in golden_files:
+                    text += f"  📦 <code>{name}</code> ({size})\n"
+                text += "\n"
 
-Contoh:
-<code>/deletegdrive rdp-images/win10.img.gz</code>
-<code>/deletegdrive rdp-images/win11-old.img.gz</code>
+            if regular_files:
+                text += "📁 <b>Regular Images:</b>\n"
+                for name, size in regular_files:
+                    text += f"  📦 <code>{name}</code> ({size})\n"
+                text += "\n"
 
-⚠️ <b>HATI-HATI!</b> File yang dihapus tidak bisa dikembalikan."""
+            text += "⚠️ <b>Klik untuk HAPUS (tidak bisa dikembalikan!):</b>"
+
+            markup = types.InlineKeyboardMarkup()
+
+            # Tombol hapus untuk regular images (prioritas hapus)
+            for name, size in regular_files[:8]:
+                short_name = name[:25] + "..." if len(name) > 25 else name
+                markup.add(types.InlineKeyboardButton(
+                    f"🗑 {short_name}",
+                    callback_data=f"del_img:{name[:50]}"
+                ))
+
+            # Tombol hapus untuk golden images
+            for name, size in golden_files[:5]:
+                short_name = name[:22] + "..." if len(name) > 22 else name
+                markup.add(types.InlineKeyboardButton(
+                    f"🗑🏆 {short_name}",
+                    callback_data=f"del_img:{name[:50]}"
+                ))
+
+            markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="gdrive_menu"))
+
+            bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+
+        except Exception as e:
+            bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
+
+    threading.Thread(target=list_for_delete, daemon=True).start()
+
+# ==================== CONFIRM DELETE IMAGE ====================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("del_img:"))
+def confirm_delete_image(call):
+    """Konfirmasi hapus image"""
+    if not is_owner(call.from_user.id):
+        bot.answer_callback_query(call.id, "⛔ Hanya untuk owner!")
+        return
+
+    filename = call.data.replace("del_img:", "")
+    bot.answer_callback_query(call.id)
+
+    is_golden = filename.startswith("golden-") or "golden" in filename.lower()
+    warning = "\n\n🏆 <b>INI GOLDEN IMAGE!</b> Yakin mau hapus?" if is_golden else ""
+
+    text = f"""⚠️ <b>KONFIRMASI HAPUS</b>
+━━━━━━━━━━━━━━━━━━
+
+📁 <b>File:</b> <code>{filename}</code>
+{warning}
+
+<b>File yang dihapus TIDAK BISA dikembalikan!</b>
+
+Yakin hapus file ini?"""
 
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("◀️ Kembali", callback_data="gdrive_menu"))
+    markup.add(types.InlineKeyboardButton(
+        "✅ Ya, Hapus!", 
+        callback_data=f"confirm_del:{filename[:50]}"
+    ))
+    markup.add(types.InlineKeyboardButton("❌ Batal", callback_data="gdrive_delete"))
 
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+    bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+
+# ==================== EXECUTE DELETE ====================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_del:"))
+def execute_delete_image(call):
+    """Eksekusi hapus image dari GDrive"""
+    if not is_owner(call.from_user.id):
+        bot.answer_callback_query(call.id, "⛔ Hanya untuk owner!")
+        return
+
+    filename = call.data.replace("confirm_del:", "")
+    bot.answer_callback_query(call.id, f"⏳ Menghapus {filename}...")
+
+    bot.send_message(call.message.chat.id, f"""🗑 <b>MENGHAPUS...</b>
+
+📁 <code>{filename}</code>
+
+⏳ Mohon tunggu...""", parse_mode="HTML")
+
+    def do_delete():
+        try:
+            result = subprocess.run(
+                ["rclone", "delete", f"gdrive:rdp-images/{filename}"],
+                capture_output=True, text=True, timeout=60
+            )
+
+            if result.returncode == 0:
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("🗑 Hapus Lainnya", callback_data="gdrive_delete"))
+                markup.add(types.InlineKeyboardButton("◀️ Menu GDrive", callback_data="gdrive_menu"))
+
+                bot.send_message(call.message.chat.id, f"""✅ <b>BERHASIL DIHAPUS!</b>
+
+📁 <code>{filename}</code>
+
+File sudah dihapus dari Google Drive.""", parse_mode="HTML", reply_markup=markup)
+            else:
+                bot.send_message(call.message.chat.id, f"""❌ <b>GAGAL HAPUS!</b>
+
+<code>{result.stderr[:300]}</code>""", parse_mode="HTML")
+
+        except Exception as e:
+            bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
+
+    threading.Thread(target=do_delete, daemon=True).start()
 
 @bot.message_handler(commands=['deletegdrive'])
 def delete_from_gdrive(message):
@@ -3299,7 +3457,7 @@ def delete_from_gdrive(message):
     try:
         parts = message.text.split()
         if len(parts) < 2:
-            bot.reply_to(message, "❌ Format: /deletegdrive [path_file]")
+            bot.reply_to(message, "❌ Format: /deletegdrive [path_file]\n\nAtau gunakan menu: Settings → GDrive → Delete Image")
             return
 
         file_path = parts[1]
